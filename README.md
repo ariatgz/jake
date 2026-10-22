@@ -1,3 +1,9 @@
+## 🏆 Credits & Acknowledgments
+
+All credit for this project goes to the hard work and big brain of **Oliad Rundassa**. Thank you, sir! 
+
+🔗 **GitHub:** [@oliad1](https://github.com/oliad1)
+
 # Jake
 
 A Discord bot that watches company career pages for internship and co-op
