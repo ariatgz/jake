@@ -4,7 +4,7 @@
 //! or doesn't compile, the model is told and asked again, a few times.
 //!
 //! Enabled by `GEMINI_API_KEY`; `GEMINI_MODEL` picks the model (default
-//! `gemini-flash-latest`).
+//! `gemini-3.5-flash`).
 
 use super::compile::{self, CompileError, Compiled};
 use super::latex::Document;
@@ -13,7 +13,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-const DEFAULT_MODEL: &str = "gemini-flash-latest";
+const DEFAULT_MODEL: &str = "gemini-3.5-flash";
 /// Full-document regenerations the model gets per tailoring run.
 const MAX_ATTEMPTS: usize = 3;
 /// Postings longer than this are cut; the requirements are near the top anyway.
@@ -34,6 +34,8 @@ pub fn model() -> String {
 
 #[derive(Serialize, Deserialize, Clone)]
 struct Part {
+    /// Missing on thought-signature parts that some models add.
+    #[serde(default)]
     text: String,
 }
 
@@ -131,7 +133,31 @@ pub(crate) fn extract_tex(reply: &str) -> Option<String> {
     Some(reply[start..end].to_string())
 }
 
+/// Pauses between retries of a busy or rate-limited API (429/503, "high demand").
+const BACKOFF: [Duration; 3] = [Duration::from_secs(5), Duration::from_secs(15), Duration::from_secs(40)];
+
+/// One API call, retried a few times when the service is merely busy.
 async fn generate(client: &Client, key: &str, model: &str, system: &str, history: &[Content]) -> Result<String, String> {
+    let mut last = String::new();
+    for (i, wait) in BACKOFF.iter().enumerate() {
+        match generate_once(client, key, model, system, history).await {
+            Ok(reply) => return Ok(reply),
+            Err((true, msg)) => {
+                eprintln!("Gemini busy (try {}): {msg}", i + 1);
+                last = msg;
+                tokio::time::sleep(*wait).await;
+            }
+            Err((false, msg)) => return Err(msg),
+        }
+    }
+    match generate_once(client, key, model, system, history).await {
+        Ok(reply) => Ok(reply),
+        Err((_, msg)) => Err(if msg.is_empty() { last } else { msg }),
+    }
+}
+
+/// `Err((retryable, message))`.
+async fn generate_once(client: &Client, key: &str, model: &str, system: &str, history: &[Content]) -> Result<String, (bool, String)> {
     let url = format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent");
     let request = Request {
         system_instruction: Content { role: "system".into(), parts: vec![Part { text: system.to_string() }] },
@@ -146,13 +172,22 @@ async fn generate(client: &Client, key: &str, model: &str, system: &str, history
         .json(&request)
         .send()
         .await
-        .map_err(|e| format!("Gemini request failed: {e}"))?;
+        .map_err(|e| (e.is_timeout() || e.is_connect(), format!("Gemini request failed: {e}")))?;
     let status = response.status();
-    let text = response.text().await.map_err(|e| format!("Gemini response unreadable: {e}"))?;
-    let parsed: Response = serde_json::from_str(&text).map_err(|_| format!("Gemini returned HTTP {status} with unexpected data: {}", super::short(&text, 200)))?;
+    let busy = status.as_u16() == 429 || status.is_server_error();
+    let text = response.text().await.map_err(|e| (busy, format!("Gemini response unreadable: {e}")))?;
+    let parsed: Response =
+        serde_json::from_str(&text).map_err(|_| (busy, format!("Gemini returned HTTP {status} with unexpected data: {}", super::short(&text, 200))))?;
     if let Some(err) = parsed.error {
-        return Err(format!("Gemini ({model}): {}", err.message));
+        let lower = err.message.to_lowercase();
+        let transient = busy || lower.contains("high demand") || lower.contains("overloaded") || lower.contains("try again");
+        return Err((transient, format!("Gemini ({model}): {}", err.message)));
     }
+    reply_text(parsed).map_err(|m| (false, m))
+}
+
+/// The model's text out of a successful response.
+fn reply_text(parsed: Response) -> Result<String, String> {
     if let Some(reason) = parsed.prompt_feedback.and_then(|f| f.block_reason) {
         return Err(format!("Gemini blocked the request ({reason})."));
     }

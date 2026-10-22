@@ -254,7 +254,7 @@ Environment variables (from `.env`):
 | `RESUME_SANDBOX` | no | Set to `off` to compile resumes without bubblewrap. Only do this if you're the bot's only user. |
 | `BWRAP` | no | Path to `bwrap` if it isn't on `PATH`. |
 | `GEMINI_API_KEY` | no | [Gemini API](https://ai.google.dev/) key. When set, resume tailoring is done by Gemini (see below); without it the built-in scorer is used. |
-| `GEMINI_MODEL` | no | Gemini model name, default `gemini-flash-latest`. |
+| `GEMINI_MODEL` | no | Gemini model name, default `gemini-3.5-flash`. |
 | `BRAVE_API_KEY` | no | [Brave Search API](https://brave.com/search/api/) key. Shows likely recruiters inline in Apply threads; without it you still get the search buttons. (Google's Custom Search API isn't an option: it's closed to new customers and shuts down January 1, 2027.) |
 
 Discord setup: create an application, enable **Message Content Intent** on the
