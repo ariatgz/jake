@@ -1,7 +1,11 @@
 mod commands;
+mod contacts;
 mod db;
 mod filter;
+mod flags;
+mod outreach;
 mod pipeline;
+mod resume;
 mod scheduler;
 mod scrapers;
 
@@ -69,41 +73,43 @@ async fn on_error(error: poise::FrameworkError<'_, Data, Error>) {
     }
 }
 
-async fn handle_button(
-    ctx: &serenity::Context,
-    data: &serenity::ComponentInteraction,
-    pool: &sqlx::PgPool,
-) -> Result<(), Error> {
+fn ephemeral(content: impl Into<String>) -> serenity::CreateInteractionResponse {
+    serenity::CreateInteractionResponse::Message(serenity::CreateInteractionResponseMessage::new().content(content).ephemeral(true))
+}
+
+async fn handle_button(ctx: &serenity::Context, data: &serenity::ComponentInteraction, shared: &Data) -> Result<(), Error> {
     let action = data.data.custom_id.as_str();
+    if let Some(owner) = action.strip_prefix(pipeline::MORE_PREFIX) {
+        return show_more(ctx, data, shared, owner).await;
+    }
+    if action == contacts::DRAFT_BUTTON {
+        return draft_button(ctx, data, shared).await;
+    }
     if action != "ACTIVE" && action != "IGNORED" {
         println!("Unknown interaction type: `{:?}`", action);
         return Ok(());
     }
 
+    let pool = &shared.pool;
     let message_id = data.message.id.get();
 
     // Only the person the job was posted for gets to act on it.
     if let Some(owner) = db::notification_owner(pool, message_id).await? {
         if owner != 0 && owner != data.user.id.get() as i64 {
-            data.create_response(
-                ctx,
-                serenity::CreateInteractionResponse::Message(
-                    serenity::CreateInteractionResponseMessage::new()
-                        .content("This posting belongs to someone else's profile.")
-                        .ephemeral(true),
-                ),
-            )
-            .await?;
+            data.create_response(ctx, ephemeral("This posting belongs to someone else's profile.")).await?;
             return Ok(());
         }
     }
 
-    // Remove the buttons so it can't be clicked twice.
+    // Swap Apply/Ignore for just the posting link so they can't be clicked twice.
+    let posting_url = data.message.embeds.first().and_then(|e| e.url.clone()).filter(|u| pipeline::link_button_ok(u));
+    let remaining = match &posting_url {
+        Some(url) => vec![serenity::CreateActionRow::Buttons(vec![serenity::CreateButton::new_link(url).label("Open posting")])],
+        None => vec![],
+    };
     data.create_response(
         ctx,
-        serenity::CreateInteractionResponse::UpdateMessage(
-            serenity::CreateInteractionResponseMessage::new().components(vec![]),
-        ),
+        serenity::CreateInteractionResponse::UpdateMessage(serenity::CreateInteractionResponseMessage::new().components(remaining)),
     )
     .await?;
 
@@ -122,16 +128,19 @@ async fn handle_button(
             .unwrap_or_else(|| "Application".to_string());
         let title: String = title.chars().take(100).collect();
 
-        let thread_builder =
-            serenity::CreateThread::new(title).kind(serenity::ChannelType::PublicThread);
-
-        let thread = data
-            .channel_id
-            .create_thread_from_message(ctx, data.message.id, thread_builder)
-            .await;
-
-        if let Ok(thread) = thread {
-            let _ = thread.say(ctx, "Starting application... Good luck!").await;
+        let thread_builder = serenity::CreateThread::new(title).kind(serenity::ChannelType::PublicThread);
+        if let Ok(thread) = data.channel_id.create_thread_from_message(ctx, data.message.id, thread_builder).await {
+            // Contacts and the tailored resume take a few seconds (a search, a
+            // few LaTeX compiles on a Pi), so they're posted in the background.
+            let http = ctx.http.clone();
+            let pool = pool.clone();
+            let client = shared.client.clone();
+            let user = data.user.clone();
+            tokio::spawn(async move {
+                if let Err(e) = start_application(&http, &pool, &client, thread.id, &user, message_id).await {
+                    eprintln!("Setting up thread for message {message_id} failed: {e}");
+                }
+            });
         }
     }
 
@@ -140,12 +149,108 @@ async fn handle_button(
     Ok(())
 }
 
+/// Fills a fresh job thread: next steps, people to contact, tailored resume.
+async fn start_application(
+    http: &serenity::Http,
+    pool: &sqlx::PgPool,
+    client: &reqwest::Client,
+    thread: serenity::ChannelId,
+    user: &serenity::User,
+    message_id: u64,
+) -> Result<(), Error> {
+    let Some((job, _)) = db::job_for_message(pool, message_id).await? else {
+        thread.say(http, "Good luck with the application!").await?;
+        return Ok(());
+    };
+    let user_id = user.id.get() as i64;
+    let stored = db::resume(pool, user_id).await?;
+    let tailoring = stored.as_ref().is_some_and(|r| r.auto_tailor);
+
+    let resume_step = if tailoring {
+        "Your tailored resume is being built and will show up below."
+    } else if stored.is_some() {
+        "Run `/resume tailor` here for a resume tailored to this job."
+    } else {
+        "Upload your resume with `/resume upload` to get a tailored copy for every job."
+    };
+    let steps = serenity::CreateEmbed::new()
+        .title("Application started")
+        .colour(serenity::Colour::from(0x3BA55Cu32))
+        .description(format!(
+            "**{}** at **{}**\n\n1. {resume_step}\n2. Apply on the company site: [open the posting]({})\n\
+             3. Reach out to someone (see People to contact below)\n4. Once you've applied, run `/update SUBMITTED`",
+            job.job_title, job.company_name, job.url
+        ));
+    thread.send_message(http, serenity::CreateMessage::new().content(format!("<@{user_id}>")).embed(steps)).await?;
+
+    let school = stored.as_ref().and_then(|r| resume::latex::Document::parse(&r.tex).ok()).and_then(|d| d.school());
+    let ctx = contacts::SearchContext::new(&job.company_name, &job.job_title, &job.cities, school);
+    let found = contacts::from_posting(&job.page_content, &job.url, &job.company_name);
+    let people = contacts::search_people(client, pool, &ctx).await;
+    let (embed, rows) = contacts::panel(&ctx, &found, people.as_deref());
+    thread.send_message(http, serenity::CreateMessage::new().embed(embed).components(rows)).await?;
+
+    let name = user.global_name.clone().unwrap_or_else(|| user.name.clone());
+    commands::resume::tailor_into_thread(http, pool, thread, user_id, &name, &job).await;
+    Ok(())
+}
+
+/// "Show next 10": posts the next batch of matches into the same channel.
+async fn show_more(ctx: &serenity::Context, data: &serenity::ComponentInteraction, shared: &Data, owner: &str) -> Result<(), Error> {
+    let Ok(owner) = owner.parse::<i64>() else { return Ok(()) };
+    if owner != data.user.id.get() as i64 {
+        data.create_response(ctx, ephemeral("These are someone else's matches.")).await?;
+        return Ok(());
+    }
+    // Same lock as scrapes, so a batch is never posted twice at once.
+    let Ok(_guard) = shared.scrape_lock.try_lock() else {
+        data.create_response(ctx, ephemeral("A scrape is running right now. Try again in a minute.")).await?;
+        return Ok(());
+    };
+    data.create_response(
+        ctx,
+        serenity::CreateInteractionResponse::UpdateMessage(
+            serenity::CreateInteractionResponseMessage::new().content("Loading the next batch...").components(vec![]),
+        ),
+    )
+    .await?;
+
+    let Some(profile) = db::profile(&shared.pool, owner).await? else { return Ok(()) };
+    let mut summary = pipeline::RunSummary::default();
+    pipeline::notify_profile(&ctx.http, &shared.pool, &profile, data.channel_id, &mut summary).await;
+    for error in &summary.errors {
+        eprintln!("Show next: {error}");
+    }
+    let done = if summary.posted == 0 { "Nothing new left to show.".to_string() } else { format!("Showed {} more.", summary.posted) };
+    data.edit_response(ctx, serenity::EditInteractionResponse::new().content(done)).await?;
+    Ok(())
+}
+
+/// "Draft message" in a job thread: drafts only the clicker sees.
+async fn draft_button(ctx: &serenity::Context, data: &serenity::ComponentInteraction, shared: &Data) -> Result<(), Error> {
+    data.create_response(
+        ctx,
+        serenity::CreateInteractionResponse::Defer(serenity::CreateInteractionResponseMessage::new().ephemeral(true)),
+    )
+    .await?;
+    let text = match db::job_for_message(&shared.pool, data.channel_id.get()).await? {
+        Some((job, _)) => commands::outreach::draft_text(&shared.pool, &data.user, &job, None).await?,
+        None => "This button only works inside a job thread.".to_string(),
+    };
+    data.edit_response(ctx, serenity::EditInteractionResponse::new().content(text)).await?;
+    Ok(())
+}
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     dotenvy::dotenv().ok();
 
     let conn_str = var("DATABASE_URL").expect("Missing `DATABASE_URL` env var, see README for more information");
-    let pool = sqlx::PgPool::connect(&conn_str).await?;
+    // A handful of connections covers the scheduler plus a few commands at
+    // once, and stays well inside Supabase's pooler limits.
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&conn_str)
+        .await?;
 
     let client = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36")
@@ -168,6 +273,8 @@ async fn main() -> Result<(), Error> {
             commands::profile::profile(),
             commands::profile::filters(),
             commands::profile::status(),
+            commands::resume::resume(),
+            commands::outreach::outreach(),
         ],
         on_error: |error| Box::pin(on_error(error)),
         pre_command: |ctx| {
@@ -186,7 +293,7 @@ async fn main() -> Result<(), Error> {
                     interaction: serenity::Interaction::Component(data),
                 } = event
                 {
-                    if let Err(e) = handle_button(ctx, data, &shared_data.pool).await {
+                    if let Err(e) = handle_button(ctx, data, shared_data).await {
                         eprintln!("Button handler failed: {:?}", e);
                     }
                 }
@@ -211,6 +318,7 @@ async fn main() -> Result<(), Error> {
                     scrape_lock.clone(),
                     Duration::from_secs(interval_minutes * 60),
                 );
+                scheduler::spawn_follow_ups(ctx.http.clone(), pool.clone());
 
                 Ok(Data { pool, client, scrape_lock })
             })

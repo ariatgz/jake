@@ -53,7 +53,7 @@ impl Board {
                         pairs.append_pair("q", search_text);
                     }
                 }
-                url.to_string()
+                without_empty_query(url)
             }
             Board::Jibe { base, query } => {
                 let mut url = Url::parse(&format!("{base}/careers-home/jobs")).expect("valid jibe url");
@@ -63,7 +63,7 @@ impl Board {
                         pairs.append_pair(name, value);
                     }
                 }
-                url.to_string()
+                without_empty_query(url)
             }
             Board::Greenhouse { token } => format!("https://job-boards.greenhouse.io/{token}"),
             Board::Lever { token } => format!("https://jobs.lever.co/{token}"),
@@ -83,6 +83,14 @@ impl Board {
             Board::Greenhouse { token } | Board::Lever { token } | Board::Ashby { token } => titleize(token),
         }
     }
+}
+
+/// `query_pairs_mut` leaves a bare "?" when nothing was appended.
+fn without_empty_query(mut url: Url) -> String {
+    if url.query() == Some("") {
+        url.set_query(None);
+    }
+    url.to_string()
 }
 
 fn titleize(slug: &str) -> String {

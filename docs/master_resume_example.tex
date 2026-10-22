@@ -1,0 +1,186 @@
+%-------------------------------------------------------------------------------
+% Example MASTER resume for Jake's /resume tailoring.
+%
+% Uses the same macros as the popular "Jake's Resume" template, so your own
+% resume in that template works as-is. Put EVERY bullet and project you have in
+% your master copy, even if it runs past one page: for each job the bot keeps
+% the most relevant ones, puts them first and trims the rest to fit.
+%
+% Optional markers (LaTeX comments, so they never show in the PDF):
+%   % @keep              on/above a bullet or project: never remove it
+%   % @tags: FPGA, RTL   on/above a bullet or project: extra keywords to match
+%-------------------------------------------------------------------------------
+\documentclass[letterpaper,11pt]{article}
+
+\usepackage{latexsym}
+\usepackage[empty]{fullpage}
+\usepackage{titlesec}
+\usepackage[usenames,dvipsnames]{color}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage[english]{babel}
+\usepackage{tabularx}
+\input{glyphtounicode}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+\addtolength{\oddsidemargin}{-0.5in}
+\addtolength{\evensidemargin}{-0.5in}
+\addtolength{\textwidth}{1in}
+\addtolength{\topmargin}{-.5in}
+\addtolength{\textheight}{1.0in}
+
+\urlstyle{same}
+\raggedbottom
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+\titleformat{\section}{\vspace{-4pt}\scshape\raggedright\large}{}{0em}{}[\color{black}\titlerule \vspace{-5pt}]
+
+\pdfgentounicode=1
+
+\newcommand{\resumeItem}[1]{\item\small{{#1 \vspace{-2pt}}}}
+\newcommand{\resumeSubheading}[4]{
+  \vspace{-2pt}\item
+    \begin{tabular*}{0.97\textwidth}[t]{l@{\extracolsep{\fill}}r}
+      \textbf{#1} & #2 \\
+      \textit{\small#3} & \textit{\small #4} \\
+    \end{tabular*}\vspace{-7pt}
+}
+\newcommand{\resumeProjectHeading}[2]{
+    \item
+    \begin{tabular*}{0.97\textwidth}{l@{\extracolsep{\fill}}r}
+      \small#1 & #2 \\
+    \end{tabular*}\vspace{-7pt}
+}
+\renewcommand\labelitemii{$\vcenter{\hbox{\tiny$\bullet$}}$}
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.15in, label={}]}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
+\newcommand{\resumeItemListStart}{\begin{itemize}}
+\newcommand{\resumeItemListEnd}{\end{itemize}\vspace{-5pt}}
+
+\begin{document}
+
+\begin{center}
+    \textbf{\Huge \scshape Alex Chen} \\ \vspace{1pt}
+    \small 555-123-4567 $|$ \href{mailto:alex@example.com}{\underline{alex@example.com}} $|$
+    \href{https://github.com/example}{\underline{github.com/example}}
+\end{center}
+
+\section{Education}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {University of Waterloo}{Waterloo, ON}
+      {Bachelor of Applied Science in Computer Engineering}{Sep. 2023 -- Apr. 2028}
+  \resumeSubHeadingListEnd
+
+\section{Experience}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {Firmware Engineering Intern}{May 2025 -- Aug. 2025}
+      {Northwind Robotics}{Toronto, ON}
+      \resumeItemListStart
+        % @keep
+        \resumeItem{Wrote C drivers for I2C and SPI sensors on an STM32 microcontroller, cutting sensor read latency by 35\%}
+        \resumeItem{Ported the motor controller firmware from bare metal to FreeRTOS, adding priority-based task scheduling}
+        \resumeItem{Built a Python hardware-in-the-loop test rig that runs 400 regression tests on every merge request}
+        \resumeItem{Debugged intermittent CAN bus faults with an oscilloscope and logic analyzer, fixing a timing race in the ISR}
+        \resumeItem{Wrote a bootloader that supports signed over-the-air firmware updates over UART}
+        \resumeItem{Created a React dashboard showing fleet battery health for the operations team}
+        \resumeItem{Documented the board bring-up process for new hires in the team wiki}
+      \resumeItemListEnd
+
+    \resumeSubheading
+      {Hardware Design Intern}{Sep. 2024 -- Dec. 2024}
+      {Lakeshore Semiconductor}{Markham, ON}
+      \resumeItemListStart
+        \resumeItem{Designed and verified an AXI4-Lite register block in SystemVerilog for a mixed-signal SoC}
+        % @tags: UVM
+        \resumeItem{Built a constrained-random testbench with functional coverage, reaching 98\% coverage on the DMA engine}
+        \resumeItem{Closed timing on a 250 MHz FPGA prototype in Vivado by pipelining the CRC datapath}
+        \resumeItem{Automated regression triage with Tcl and Python scripts, saving the team 5 hours a week}
+        \resumeItem{Reviewed PCB schematics in Altium for the evaluation board's power sequencing}
+        \resumeItem{Presented the verification plan to 12 engineers at the design review}
+      \resumeItemListEnd
+
+    \resumeSubheading
+      {Software Developer Intern}{Jan. 2024 -- Apr. 2024}
+      {Maple Fintech}{Waterloo, ON}
+      \resumeItemListStart
+        \resumeItem{Built REST APIs in Java with Spring Boot and PostgreSQL serving 2M requests per day}
+        \resumeItem{Cut CI pipeline time from 25 to 9 minutes by caching Docker layers in GitHub Actions}
+        \resumeItem{Wrote unit tests in JUnit, raising coverage of the payments module from 60\% to 85\%}
+        \resumeItem{Migrated a legacy cron job to Kafka consumers, removing 3 hours of nightly batch latency}
+        \resumeItem{Fixed 40+ bugs reported by customer support across the web and mobile clients}
+      \resumeItemListEnd
+  \resumeSubHeadingListEnd
+
+\section{Projects}
+    \resumeSubHeadingListStart
+      \resumeProjectHeading
+          {\textbf{RISC-V Core} $|$ \emph{SystemVerilog, Vivado, Python}}{2025}
+          \resumeItemListStart
+            \resumeItem{Designed a 5-stage pipelined RV32I CPU with hazard detection and forwarding, running at 100 MHz on an FPGA}
+            \resumeItem{Verified it against the official compliance suite using a Python co-simulation model}
+            \resumeItem{Added a direct-mapped instruction cache, improving CoreMark by 22\%}
+          \resumeItemListEnd
+      \resumeProjectHeading
+          {\textbf{Weather Station} $|$ \emph{C, ESP32, KiCad}}{2024}
+          \resumeItemListStart
+            \resumeItem{Designed a 4-layer PCB in KiCad with a solar charger and low-power ESP32 sleep modes}
+            \resumeItem{Wrote firmware that streams sensor data over MQTT and lasts 3 weeks on battery}
+          \resumeItemListEnd
+      \resumeProjectHeading
+          {\textbf{Ray Tracer} $|$ \emph{C++, CUDA}}{2024}
+          \resumeItemListStart
+            \resumeItem{Wrote a path tracer in C++ and ported the hot loop to CUDA for a 40x speedup}
+            \resumeItem{Implemented BVH acceleration and multithreading for the CPU fallback}
+          \resumeItemListEnd
+      \resumeProjectHeading
+          {\textbf{Study Buddy} $|$ \emph{React, Node.js, MongoDB}}{2023}
+          \resumeItemListStart
+            \resumeItem{Built a web app that matches students into study groups by course and schedule, used by 300 students}
+            \resumeItem{Deployed on AWS with a Docker-based CI/CD pipeline}
+          \resumeItemListEnd
+      \resumeProjectHeading
+          {\textbf{Chess Engine} $|$ \emph{Rust}}{2023}
+          \resumeItemListStart
+            \resumeItem{Wrote a bitboard chess engine in Rust with alpha-beta search, rated about 2000 on Lichess}
+            \resumeItem{Added a transposition table and iterative deepening, doubling search depth at the same time budget}
+          \resumeItemListEnd
+      \resumeProjectHeading
+          {\textbf{Line-Following Robot} $|$ \emph{C, Arduino, PID control}}{2023}
+          \resumeItemListStart
+            \resumeItem{Built a line-following robot with an Arduino, IR sensors and a tuned PID controller}
+            \resumeItem{Placed 2nd of 30 teams in the first-year design competition}
+          \resumeItemListEnd
+    \resumeSubHeadingListEnd
+
+\section{Leadership}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {Electrical Team Member}{Sep. 2023 -- Present}
+      {Waterloo Formula Electric}{Waterloo, ON}
+      \resumeItemListStart
+        \resumeItem{Designed the battery management system's cell-voltage sensing board in Altium}
+        \resumeItem{Wrote STM32 firmware that reports cell temperatures over CAN at 100 Hz}
+        \resumeItem{Led 3 new members through soldering and board bring-up training}
+        \resumeItem{Ran the team's social media during competition season}
+      \resumeItemListEnd
+  \resumeSubHeadingListEnd
+
+\section{Technical Skills}
+ \begin{itemize}[leftmargin=0.15in, label={}]
+    \small{\item{
+     \textbf{Languages}{: Python, C/C++, Java, JavaScript, SystemVerilog, Verilog, Rust, Tcl, SQL} \\
+     \textbf{Hardware}{: FPGA, Vivado, KiCad, Altium, oscilloscope, logic analyzer} \\
+     \textbf{Tools}{: Git, Docker, Linux, FreeRTOS, React, Node.js, PostgreSQL, Kafka, AWS}
+    }}
+ \end{itemize}
+
+\end{document}

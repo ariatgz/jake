@@ -41,41 +41,67 @@ pub fn location_haystack(cities: &[City]) -> String {
     parts.join(" | ").to_lowercase()
 }
 
-/// `skip_seniority` is used for the hand-written scrapers, which already only
-/// return internships and sometimes strip "Intern" from the title.
-pub fn matches(profile: &Profile, title: &str, body: &str, cities: &[City], skip_seniority: bool) -> bool {
-    let title_l = title.to_lowercase();
+fn lowercase_terms(terms: &[String]) -> Vec<String> {
+    terms.iter().map(|t| t.trim().to_lowercase()).filter(|t| !t.is_empty()).collect()
+}
 
-    if !skip_seniority && !profile.seniority.is_empty() {
-        let hit = profile.seniority.iter().any(|s| contains_word(&title_l, &s.to_lowercase()));
-        if !hit {
-            return false;
+/// A profile's filters, lowercased once so a whole run of candidates can be
+/// checked without re-allocating every term for every job.
+pub struct Matcher {
+    seniority: Vec<String>,
+    keywords: Vec<String>,
+    exclude: Vec<String>,
+    locations: Vec<String>,
+    keywords_title_only: bool,
+}
+
+impl Matcher {
+    pub fn new(profile: &Profile) -> Self {
+        Self {
+            seniority: lowercase_terms(&profile.seniority),
+            keywords: lowercase_terms(&profile.keywords),
+            exclude: lowercase_terms(&profile.exclude_keywords),
+            locations: lowercase_terms(&profile.locations),
+            keywords_title_only: profile.keywords_title_only,
         }
     }
 
-    if !profile.keywords.is_empty() {
-        let body_l = body.to_lowercase();
-        let hit = profile.keywords.iter().any(|k| {
-            let k = k.to_lowercase();
-            contains_word(&title_l, &k) || contains_word(&body_l, &k)
-        });
-        if !hit {
+    /// `skip_seniority` is used for the hand-written scrapers, which already only
+    /// return internships and sometimes strip "Intern" from the title.
+    pub fn matches(&self, title: &str, body: &str, cities: &[City], skip_seniority: bool) -> bool {
+        let title_l = title.to_lowercase();
+
+        // Exclusions only look at the title: words like "senior" or "sales"
+        // show up in the description of almost every posting.
+        if self.exclude.iter().any(|e| contains_word(&title_l, e)) {
             return false;
         }
-    }
 
-    if !profile.locations.is_empty() {
-        let hay = location_haystack(cities);
-        let hit = profile.locations.iter().any(|l| {
-            let l = l.trim().to_lowercase();
-            !l.is_empty() && hay.contains(&l)
-        });
-        if !hit {
+        if !skip_seniority && !self.seniority.is_empty() && !self.seniority.iter().any(|s| contains_word(&title_l, s)) {
             return false;
         }
-    }
 
-    true
+        if !self.locations.is_empty() {
+            let hay = location_haystack(cities);
+            if !self.locations.iter().any(|l| hay.contains(l.as_str())) {
+                return false;
+            }
+        }
+
+        if !self.keywords.is_empty() && !self.keywords.iter().any(|k| contains_word(&title_l, k)) {
+            if self.keywords_title_only {
+                return false;
+            }
+            // Lowercasing the description is the expensive part, so it only
+            // happens when the title alone didn't decide the match.
+            let body_l = body.to_lowercase();
+            if !self.keywords.iter().any(|k| contains_word(&body_l, k)) {
+                return false;
+            }
+        }
+
+        true
+    }
 }
 
 /// Splits a comma-separated slash-command argument into trimmed, de-duplicated terms.
@@ -103,7 +129,15 @@ mod tests {
             keywords: keywords.iter().map(|s| s.to_string()).collect(),
             seniority: seniority.iter().map(|s| s.to_string()).collect(),
             locations: locations.iter().map(|s| s.to_string()).collect(),
+            exclude_keywords: Vec::new(),
+            keywords_title_only: false,
+            evaluated_through: 0,
+            filters_version: 0,
         }
+    }
+
+    fn matches(p: &Profile, title: &str, body: &str, cities: &[City], skip_seniority: bool) -> bool {
+        Matcher::new(p).matches(title, body, cities, skip_seniority)
     }
 
     fn city(name: &str, region: &str, country: &str) -> City {
@@ -138,6 +172,26 @@ mod tests {
     fn empty_filters_match_everything() {
         let p = profile(&[], &[], &[]);
         assert!(matches(&p, "Anything", "", &[], false));
+    }
+
+    #[test]
+    fn exclude_keywords_check_title_only() {
+        let mut p = profile(&["Firmware"], &["Intern"], &[]);
+        p.exclude_keywords = vec!["PhD".into(), "Sales".into()];
+        assert!(!matches(&p, "PhD Firmware Intern", "", &[], false));
+        assert!(!matches(&p, "Firmware Sales Intern", "", &[], false));
+        assert!(matches(&p, "Firmware Intern", "you will work with PhD researchers and sales", &[], false));
+        assert!(!matches(&p, "Firmware Intern (PhD)", "", &[], true), "exclusions apply to hand-written scrapers too");
+        assert!(matches(&p, "Firmware Intern - Salesforce tooling", "", &[], false), "whole words only");
+    }
+
+    #[test]
+    fn keywords_title_only() {
+        let mut p = profile(&["FPGA"], &["Intern"], &[]);
+        assert!(matches(&p, "Design Intern", "prototype on fpga boards", &[], false));
+        p.keywords_title_only = true;
+        assert!(!matches(&p, "Design Intern", "prototype on fpga boards", &[], false));
+        assert!(matches(&p, "FPGA Design Intern", "", &[], false));
     }
 
     #[test]

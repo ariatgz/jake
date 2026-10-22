@@ -67,7 +67,32 @@ const SEEDS: &[(&str, &str, &str)] = &[
     ("onsemi", "WORKDAY", "https://onsemi.wd1.myworkdayjobs.com/onsemi"),
     ("Astera Labs", "GREENHOUSE", "https://job-boards.greenhouse.io/asteralabs"),
     ("Etched", "ASHBY", "https://jobs.ashbyhq.com/etched"),
+    // Added in migration 20261022030000_more_hardware_companies.
+    ("Marvell", "WORKDAY", "https://marvell.wd1.myworkdayjobs.com/MarvellCareers?workerSubType=65dea26481d001e09dfbab4927173419"),
+    ("Cadence", "WORKDAY", "https://cadence.wd1.myworkdayjobs.com/External_Careers?workerSubType=631f97c41c2749729ac5abe683f281d0"),
+    ("Ciena", "WORKDAY", "https://ciena.wd5.myworkdayjobs.com/Careers?workerSubType=ac99acc6fb6b108fe66503995497ae7c"),
+    ("Analog Devices", "WORKDAY", "https://analogdevices.wd1.myworkdayjobs.com/External?workerSubType=633b03df4f5d1000ec10ab4627a80000"),
+    ("Microchip", "WORKDAY", "https://microchiphr.wd5.myworkdayjobs.com/External?zz_LRV_Career_Level_Requisition_Extended=57f4a35d19da0166ec5d6a6365019c99"),
+    ("General Motors", "WORKDAY", "https://generalmotors.wd5.myworkdayjobs.com/Careers_GM?workerSubType=81219c91208501e94c213185a61a320a&workerSubType=81219c91208501ec00823185a61a360a"),
+    ("BlackBerry", "WORKDAY", "https://bb.wd3.myworkdayjobs.com/BlackBerry"),
+    ("Tenstorrent", "GREENHOUSE", "https://job-boards.greenhouse.io/tenstorrent"),
+    ("Lightmatter", "GREENHOUSE", "https://job-boards.greenhouse.io/lightmatter"),
+    ("Cerebras", "ASHBY", "https://jobs.ashbyhq.com/cerebras"),
+    ("Kepler Communications", "LEVER", "https://jobs.lever.co/kepler"),
 ];
+
+/// Seed URLs must be in the canonical form the bot stores, or `/add-company`
+/// wouldn't recognise them as already known.
+#[test]
+fn seed_urls_are_canonical() {
+    for (name, kind, url) in SEEDS {
+        let board = scrapers::detect::from_board_url(url).unwrap_or_else(|| panic!("{name}: unrecognised URL"));
+        assert_eq!(board.kind(), *kind, "{name}");
+        if *kind != "JIBE" {
+            assert_eq!(board.canonical_url(), *url, "{name}");
+        }
+    }
+}
 
 fn client() -> reqwest::Client {
     reqwest::Client::builder()
@@ -80,13 +105,14 @@ fn client() -> reqwest::Client {
 #[tokio::test]
 #[ignore = "talks to live job boards"]
 async fn live_boards() {
-    let only: Option<String> = std::env::var("BOARD").ok();
+    // BOARD=name or BOARD=name1,name2 runs only those.
+    let only: Option<Vec<String>> = std::env::var("BOARD").ok().map(|v| v.split(',').map(|s| s.trim().to_lowercase()).collect());
     let client = client();
     let mut failures = Vec::new();
 
     for (i, (name, kind, url)) in SEEDS.iter().enumerate() {
         if let Some(filter) = &only {
-            if !name.eq_ignore_ascii_case(filter) {
+            if !filter.contains(&name.to_lowercase()) {
                 continue;
             }
         }

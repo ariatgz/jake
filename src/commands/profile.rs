@@ -17,15 +17,46 @@ pub enum Preset {
 pub enum FilterField {
     #[name = "keywords"]
     Keywords,
+    #[name = "exclude"]
+    Exclude,
     #[name = "locations"]
     Locations,
     #[name = "seniority"]
     Seniority,
 }
 
+#[derive(Debug, Clone, Copy, poise::ChoiceParameter)]
+pub enum KeywordScope {
+    /// A keyword in the title or anywhere in the description counts
+    #[name = "title_and_description"]
+    TitleAndDescription,
+    /// Only keywords in the job title count
+    #[name = "title_only"]
+    TitleOnly,
+}
+
 const HARDWARE_KEYWORDS: &[&str] = &["Hardware", "Firmware", "FPGA", "RTL", "ASIC", "Electrical", "Embedded"];
 const HARDWARE_LOCATIONS: &[&str] = &["Toronto", "Waterloo", "Markham", "Vancouver", "Canada"];
-const HARDWARE_COMPANIES: &[&str] = &["AMD", "Altera", "Intel", "NVIDIA", "onsemi", "Astera Labs", "Etched"];
+const HARDWARE_COMPANIES: &[&str] = &[
+    "AMD",
+    "Altera",
+    "Intel",
+    "NVIDIA",
+    "onsemi",
+    "Astera Labs",
+    "Etched",
+    "Marvell",
+    "Cadence",
+    "Ciena",
+    "Analog Devices",
+    "Microchip",
+    "General Motors",
+    "BlackBerry",
+    "Tenstorrent",
+    "Lightmatter",
+    "Cerebras",
+    "Kepler Communications",
+];
 
 fn list_or_any(items: &[String]) -> String {
     if items.is_empty() { "*any*".to_string() } else { items.join(", ") }
@@ -52,11 +83,18 @@ async fn status_reply(ctx: Context<'_>, user_id: i64) -> Result<CreateReply, Err
         counts.iter().map(|(state, n)| format!("{state}: {n}")).collect::<Vec<_>>().join(" · ")
     };
 
+    let keyword_label = if profile.keywords_title_only { "Keywords (title only)" } else { "Keywords (title or description)" };
+
     let embed = serenity::CreateEmbed::new()
         .title(format!("Profile for {}", profile.display_name))
         .field("Notifications go to", format!("<#{}>", profile.channel_id), false)
         .field("Seniority (title must contain one)", list_or_any(&profile.seniority), false)
-        .field("Keywords (title or description)", list_or_any(&profile.keywords), false)
+        .field(keyword_label, list_or_any(&profile.keywords), false)
+        .field(
+            "Excluded (title must not contain)",
+            if profile.exclude_keywords.is_empty() { "*none*".to_string() } else { profile.exclude_keywords.join(", ") },
+            false,
+        )
         .field("Locations", list_or_any(&profile.locations), false)
         .field("Tracked companies", company_text, false)
         .field("Jobs posted to you", counts_text, false)
@@ -96,7 +134,12 @@ pub async fn setup(
     if let Some(Preset::HardwareCanada) = preset {
         let keywords: Vec<String> = HARDWARE_KEYWORDS.iter().map(|s| s.to_string()).collect();
         let locations: Vec<String> = HARDWARE_LOCATIONS.iter().map(|s| s.to_string()).collect();
-        db::set_profile_filters(pool, user_id, Some(&keywords), None, Some(&locations)).await?;
+        db::set_profile_filters(
+            pool,
+            user_id,
+            &db::FilterUpdate { keywords: Some(&keywords), locations: Some(&locations), ..Default::default() },
+        )
+        .await?;
 
         let mut tracked = 0;
         for name in HARDWARE_COMPANIES {
@@ -146,8 +189,10 @@ pub async fn filters(_ctx: Context<'_>) -> Result<(), Error> {
 pub async fn set(
     ctx: Context<'_>,
     #[description = "Domain keywords, e.g. \"Hardware, Firmware, FPGA\""] keywords: Option<String>,
+    #[description = "Skip jobs whose title contains any of these, e.g. \"Senior, PhD, Sales\""] exclude: Option<String>,
     #[description = "Cities/regions/countries, e.g. \"Toronto, Vancouver, Canada\""] locations: Option<String>,
     #[description = "Title must contain one, e.g. \"Intern, Co-op\""] seniority: Option<String>,
+    #[description = "Where keywords must appear (default: title or description)"] keyword_scope: Option<KeywordScope>,
 ) -> Result<(), Error> {
     let pool = &ctx.data().pool;
     let user_id = ctx.author().id.get() as i64;
@@ -157,16 +202,24 @@ pub async fn set(
         return Ok(());
     }
 
-    if keywords.is_none() && locations.is_none() && seniority.is_none() {
-        ctx.say("Give at least one of `keywords`, `locations` or `seniority`.").await?;
+    if keywords.is_none() && exclude.is_none() && locations.is_none() && seniority.is_none() && keyword_scope.is_none() {
+        ctx.say("Give at least one of `keywords`, `exclude`, `locations`, `seniority` or `keyword_scope`.").await?;
         return Ok(());
     }
 
     let keywords = keywords.map(|k| parse_terms_arg(&k));
+    let exclude = exclude.map(|e| parse_terms_arg(&e));
     let locations = locations.map(|l| parse_terms_arg(&l));
     let seniority = seniority.map(|s| parse_terms_arg(&s));
 
-    db::set_profile_filters(pool, user_id, keywords.as_deref(), seniority.as_deref(), locations.as_deref()).await?;
+    let update = db::FilterUpdate {
+        keywords: keywords.as_deref(),
+        exclude_keywords: exclude.as_deref(),
+        seniority: seniority.as_deref(),
+        locations: locations.as_deref(),
+        keywords_title_only: keyword_scope.map(|s| matches!(s, KeywordScope::TitleOnly)),
+    };
+    db::set_profile_filters(pool, user_id, &update).await?;
 
     let reply = status_reply(ctx, user_id).await?;
     ctx.send(reply.content("Filters updated.")).await?;
@@ -185,11 +238,13 @@ pub async fn clear(ctx: Context<'_>, #[description = "Which filter to clear"] fi
     }
 
     let empty: Vec<String> = Vec::new();
-    match field {
-        FilterField::Keywords => db::set_profile_filters(pool, user_id, Some(&empty), None, None).await?,
-        FilterField::Locations => db::set_profile_filters(pool, user_id, None, None, Some(&empty)).await?,
-        FilterField::Seniority => db::set_profile_filters(pool, user_id, None, Some(&empty), None).await?,
-    }
+    let update = match field {
+        FilterField::Keywords => db::FilterUpdate { keywords: Some(&empty), ..Default::default() },
+        FilterField::Exclude => db::FilterUpdate { exclude_keywords: Some(&empty), ..Default::default() },
+        FilterField::Locations => db::FilterUpdate { locations: Some(&empty), ..Default::default() },
+        FilterField::Seniority => db::FilterUpdate { seniority: Some(&empty), ..Default::default() },
+    };
+    db::set_profile_filters(pool, user_id, &update).await?;
 
     let reply = status_reply(ctx, user_id).await?;
     ctx.send(reply.content("Filter cleared.")).await?;
