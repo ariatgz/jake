@@ -165,11 +165,9 @@ async fn single_job(
             job_title: decode_html_entities(title.trim()).to_string(),
             url,
             page_content,
-            lower_wage_cents: lower.unwrap(),
-            upper_wage_cents: upper,
-            state: "ACTIVE".to_string(),
-            currency: currency,
-            thread_id: None
+            lower_wage_cents: lower,
+            upper_wage_cents: upper,
+            currency: currency,
         };
 
         ScrapeEvent {

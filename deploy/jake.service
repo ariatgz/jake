@@ -1,0 +1,25 @@
+# systemd unit for the Jake Discord job-scraper bot.
+# Install:  sudo cp deploy/jake.service /etc/systemd/system/jake.service
+#           sudo systemctl daemon-reload && sudo systemctl enable --now jake
+# Logs:     journalctl -u jake -f
+#
+# Adjust User/WorkingDirectory/ExecStart if you cloned somewhere other than /home/pi/jake.
+
+[Unit]
+Description=Jake - Discord internship scraper bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/jake
+EnvironmentFile=/home/pi/jake/.env
+ExecStart=/home/pi/jake/target/release/jake
+Restart=always
+RestartSec=15
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

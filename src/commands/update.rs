@@ -1,106 +1,57 @@
-use crate::{Context, Error};
-use poise::serenity_prelude as serenity;
-use poise::reply::CreateReply;
+use crate::{db, Context, Error};
 use futures::{Stream, StreamExt};
-use serenity::Timestamp;
+use poise::reply::CreateReply;
+use poise::serenity_prelude as serenity;
 use serenity::ChannelType;
-use sqlx::{Pool, Postgres};
+use serenity::Timestamp;
 
-async fn autocomplete_state<'a>(
-    _ctx: Context<'_>,
-    partial: &'a str,
-) -> impl Stream<Item = String> + 'a {
+async fn autocomplete_state<'a>(_ctx: Context<'_>, partial: &'a str) -> impl Stream<Item = String> + 'a {
     futures::stream::iter(&["ACTIVE", "SUBMITTED", "REJECTED", "DELETED", "IGNORED"])
-        .filter(move |state| futures::future::ready(state.to_lowercase().starts_with(partial)))
+        .filter(move |state| futures::future::ready(state.to_lowercase().starts_with(&partial.to_lowercase())))
         .map(|state| state.to_string())
 }
 
-pub async fn update_application_state(
-    db_pool: &Pool<Postgres>,
-    thread_id: u64,
-    after_state: &str 
-) -> Result<Option<String>, Error> {
-    Ok(sqlx::query!(r#"
-        WITH new_row AS (
-            UPDATE applications
-            SET state = $2
-            WHERE thread_id = $1
-            RETURNING id
-        )
-
-        INSERT INTO application_events (
-            application_id,
-            before_state,
-            after_state
-        )
-        SELECT
-            nr.id,
-            (
-                SELECT after_state
-                FROM application_events AS ae
-                WHERE ae.application_id = nr.id
-                ORDER BY id DESC
-                LIMIT 1
-            ),
-            $2
-        FROM new_row AS nr
-        RETURNING before_state;
-        "#,
-        thread_id as i64,
-        after_state
-    )
-    .fetch_one(db_pool)
-    .await?
-    .before_state)
-}
-
-#[poise::command(slash_command)]
+/// Update the state of the application whose thread you're in
+#[poise::command(slash_command, guild_only)]
 pub async fn update(
     ctx: Context<'_>,
-    #[description = "Application's new state"] #[autocomplete = "autocomplete_state"] after_state: String
+    #[description = "Application's new state"]
+    #[autocomplete = "autocomplete_state"]
+    after_state: String,
 ) -> Result<(), Error> {
     ctx.defer().await?;
 
-    let Some(guild_c) = ctx.guild_channel().await else {
-        ctx.say("Guild channel is None.").await?;
-        return Ok(())
-    };
-
-    if guild_c.kind != ChannelType::PublicThread {
-        ctx.say("Invalid use of /update command. Use this command in a public job thread.").await?;
-
-        return Ok(())
+    let after_state = after_state.trim().to_uppercase();
+    if !["ACTIVE", "SUBMITTED", "REJECTED", "DELETED", "IGNORED"].contains(&after_state.as_str()) {
+        ctx.say("State must be one of ACTIVE, SUBMITTED, REJECTED, DELETED or IGNORED.").await?;
+        return Ok(());
     }
 
-    let parent_id = guild_c.id.get();
-    
-    let Some(before_state) = update_application_state(&ctx.data().pool,
-        parent_id,
-        &after_state.as_str()
-    ).await? else {
-        ctx.say("No before_state found for this application.").await?;
-
-        return Ok(())
+    let Some(guild_channel) = ctx.guild_channel().await else {
+        ctx.say("This command only works inside a server.").await?;
+        return Ok(());
     };
 
-    let timestamp = Timestamp::now();
+    if guild_channel.kind != ChannelType::PublicThread {
+        ctx.say("Invalid use of /update. Use this command inside a job thread.").await?;
+        return Ok(());
+    }
 
-    //Might want to make this embed with a timestamp
-    let response = CreateReply::default()
-        .embed(
-            serenity::CreateEmbed::new()
+    // A thread created from a message shares that message's id.
+    let message_id = guild_channel.id.get();
+
+    let Some(before_state) = db::update_notification_state(&ctx.data().pool, message_id, &after_state).await? else {
+        ctx.say("This thread isn't attached to a tracked job posting.").await?;
+        return Ok(());
+    };
+
+    let response = CreateReply::default().embed(
+        serenity::CreateEmbed::new()
             .title("Application Updated")
-            .description(
-                format!("Application status changed from `{}` to `{}`.",
-                    before_state,
-                    after_state
-                )
-            )
-            .timestamp(&timestamp)
-        );
+            .description(format!("Application status changed from `{}` to `{}`.", before_state, after_state))
+            .timestamp(Timestamp::now()),
+    );
 
-    let reply_handle = ctx.send(response).await?;
-    reply_handle.message().await?;
-
+    ctx.send(response).await?;
     Ok(())
 }

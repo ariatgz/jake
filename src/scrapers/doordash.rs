@@ -167,11 +167,9 @@ async fn single_job(
         job_title: cleaned_title.trim().to_string(),
         url: job.absolute_url,
         page_content,
-        lower_wage_cents: lowest.unwrap(),
-        upper_wage_cents: highest,
-        state: "ACTIVE".to_string(),
-        currency: "USD".to_string(),
-        thread_id: None
+        lower_wage_cents: lowest,
+        upper_wage_cents: highest,
+        currency: "USD".to_string(),
     };
 
     let event = ScrapeEvent {

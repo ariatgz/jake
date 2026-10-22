@@ -1261,6 +1261,7 @@ dependencies = [
  "futures",
  "html-escape",
  "poise",
+ "regex",
  "reqwest 0.13.4",
  "scraper",
  "serde",
@@ -1269,6 +1270,7 @@ dependencies = [
  "sqlx",
  "tokio",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

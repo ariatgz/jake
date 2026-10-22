@@ -1,0 +1,4 @@
+# Copy to terraform.tfvars (gitignored) and fill in.
+supabase_org_id       = ""   # Organization slug from the Supabase dashboard URL
+supabase_db_password  = ""   # Postgres password for the new project
+supabase_access_token = ""   # Personal access token: Account -> Access Tokens

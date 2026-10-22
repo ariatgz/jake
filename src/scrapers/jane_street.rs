@@ -90,11 +90,9 @@ pub async fn main(
             job_title: job.position,
             url,
             page_content: job.overview,
-            lower_wage_cents: lower,
-            upper_wage_cents: upper,
-            state: "ACTIVE".to_string(),
-            currency: "USD".to_string(),
-            thread_id: None
+            lower_wage_cents: Some(lower),
+            upper_wage_cents: upper,
+            currency: "USD".to_string(),
         };
 
         let event = ScrapeEvent {

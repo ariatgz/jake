@@ -214,11 +214,9 @@ pub async fn main(
                 hit.fields.basic_qualifications.unwrap().first().unwrap(),
                 hit.fields.preferred_qualifications.first().unwrap()
             ),
-            lower_wage_cents: lowest.unwrap(),
-            upper_wage_cents: highest,
-            state: "ACTIVE".to_string(),
-            currency: currency.unwrap(),
-            thread_id: None
+            lower_wage_cents: lowest,
+            upper_wage_cents: highest,
+            currency: currency.unwrap(),
         };
 
         let event = ScrapeEvent {
