@@ -3,6 +3,7 @@
 //! Nothing is invented; content is only reordered or left out.
 
 pub mod compile;
+pub mod gemini;
 pub mod latex;
 pub mod skills;
 
@@ -306,6 +307,8 @@ pub struct Tailored {
     pub pages: Option<u32>,
     pub report: Report,
     pub notes: Vec<String>,
+    /// Model name when an AI did the tailoring instead of the built-in scorer.
+    pub by_ai: Option<String>,
 }
 
 pub(crate) fn short(text: &str, max: usize) -> String {
@@ -454,6 +457,7 @@ pub async fn tailor(master: &str, title: &str, body: &str, max_pages: u32) -> Re
                     pdf: Some(original.pdf),
                     report: report(&doc, &knowledge, &posting, &layout, &doc.identity_plan(), &[]),
                     notes: vec![format!("The tailored version didn't compile, so this is your original resume. ({e})")],
+                    by_ai: None,
                 }),
                 Err(master_err) => Err(format!("Your uploaded resume doesn't compile: {master_err}")),
             };
@@ -468,7 +472,7 @@ pub async fn tailor(master: &str, title: &str, body: &str, max_pages: u32) -> Re
     if posting.is_empty() {
         notes.push("The posting doesn't name any skills the bot recognises, so the order is mostly unchanged.".into());
     }
-    Ok(Tailored { tex, pages: compiled.as_ref().map(|c| c.pages), pdf: compiled.map(|c| c.pdf), report, notes })
+    Ok(Tailored { tex, pages: compiled.as_ref().map(|c| c.pages), pdf: compiled.map(|c| c.pdf), report, notes, by_ai: None })
 }
 
 /// The resume bullet most relevant to a posting, for outreach messages.
@@ -622,7 +626,11 @@ pub fn report_embed(t: &Tailored, job_title: &str) -> poise::serenity_prelude::C
         embed = embed.field("Notes", short(&t.notes.join("\n"), 1000), false);
     }
     let pages = t.pages.map(|p| format!("{p} page{}", if p == 1 { "" } else { "s" })).unwrap_or_else(|| "not compiled".into());
-    embed.footer(poise::serenity_prelude::CreateEmbedFooter::new(format!("{pages} · reordered from your own content, nothing invented")))
+    let how = match &t.by_ai {
+        Some(model) => format!("tailored by {model} from your own content"),
+        None => "reordered from your own content, nothing invented".to_string(),
+    };
+    embed.footer(poise::serenity_prelude::CreateEmbedFooter::new(format!("{pages} · {how}")))
 }
 
 #[cfg(test)]

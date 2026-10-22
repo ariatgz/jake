@@ -166,9 +166,22 @@ pub async fn show(ctx: Context<'_>) -> Result<(), Error> {
 }
 
 /// Builds the tailored resume and its report. Shared by `/resume tailor` and the Apply button.
-async fn build(stored: &db::StoredResume, job: &db::JobDetail, display_name: &str, max_pages: Option<u8>) -> Result<(CreateEmbed, Vec<CreateAttachment>), String> {
+async fn build(client: &reqwest::Client, stored: &db::StoredResume, job: &db::JobDetail, display_name: &str, max_pages: Option<u8>) -> Result<(CreateEmbed, Vec<CreateAttachment>), String> {
     let pages = max_pages.map(u32::from).unwrap_or(stored.max_pages.max(1) as u32);
-    let tailored = resume::tailor(&stored.tex, &job.job_title, &job.page_content, pages).await?;
+    // Gemini when a key is configured; the built-in scorer otherwise, or if Gemini fails.
+    let tailored = if resume::gemini::enabled() {
+        match resume::gemini::tailor(client, &stored.tex, &job.job_title, &job.page_content, pages).await {
+            Ok(t) => t,
+            Err(reason) => {
+                eprintln!("Gemini tailoring failed, using built-in: {reason}");
+                let mut t = resume::tailor(&stored.tex, &job.job_title, &job.page_content, pages).await?;
+                t.notes.insert(0, format!("Gemini failed ({}), so this used the built-in tailoring.", resume::short(&reason, 300)));
+                t
+            }
+        }
+    } else {
+        resume::tailor(&stored.tex, &job.job_title, &job.page_content, pages).await?
+    };
     let stem = resume::file_stem(display_name);
     let embed = resume::report_embed(&tailored, &format!("{} @ {}", job.job_title, job.company_name)).url(&job.url);
     let mut files = Vec::new();
@@ -180,7 +193,7 @@ async fn build(stored: &db::StoredResume, job: &db::JobDetail, display_name: &st
 }
 
 /// Posts a tailored resume into a job thread. Used when Apply is clicked.
-pub async fn tailor_into_thread(http: &Http, pool: &PgPool, thread: ChannelId, user_id: i64, display_name: &str, job: &db::JobDetail) {
+pub async fn tailor_into_thread(http: &Http, pool: &PgPool, client: &reqwest::Client, thread: ChannelId, user_id: i64, display_name: &str, job: &db::JobDetail) {
     let stored = match db::resume(pool, user_id).await {
         Ok(Some(r)) if r.auto_tailor => r,
         Ok(_) => return,
@@ -189,7 +202,7 @@ pub async fn tailor_into_thread(http: &Http, pool: &PgPool, thread: ChannelId, u
             return;
         }
     };
-    let message = match build(&stored, job, display_name, None).await {
+    let message = match build(client, &stored, job, display_name, None).await {
         Ok((embed, files)) => CreateMessage::new().embed(embed).add_files(files),
         Err(reason) => CreateMessage::new().content(format!("Couldn't tailor your resume: {reason}")),
     };
@@ -243,7 +256,7 @@ pub async fn tailor(
 
     let author = ctx.author();
     let display_name = author.global_name.clone().unwrap_or_else(|| author.name.clone());
-    match build(&stored, &job, &display_name, pages).await {
+    match build(&ctx.data().client, &stored, &job, &display_name, pages).await {
         Ok((embed, files)) => {
             let mut reply = CreateReply::default().embed(embed);
             for file in files {

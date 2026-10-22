@@ -136,6 +136,15 @@ you really have that skill, add it to a bullet in your master copy.
 Guaranteed rules: Education is never changed, each job keeps at least two
 bullets, each project keeps its first bullet, and at least two projects stay.
 
+**With Gemini.** If `GEMINI_API_KEY` is set, steps 1 to 4 are done by Gemini
+instead: the bot sends the master `.tex` and the posting with the same rules
+(reorder, trim, lightly reword, never invent, Education untouched, fit the page
+limit), takes the `.tex` it returns, runs the same safety checks, and compiles it
+in the sandbox. If the result is over the page limit or doesn't compile, Gemini
+is told and asked again, up to three times. The report then compares keyword
+coverage before and after; the "moved/cut" details only exist for the built-in
+scorer. If the API call fails, the built-in tailoring runs and the report says so.
+
 Optional markers, written as LaTeX comments so they never show in the PDF:
 
 ```latex
@@ -244,6 +253,8 @@ Environment variables (from `.env`):
 | `PDFLATEX` | no | Path to `pdflatex` for resume tailoring; defaults to `pdflatex` on `PATH`. Without it, tailored resumes come as `.tex` only. |
 | `RESUME_SANDBOX` | no | Set to `off` to compile resumes without bubblewrap. Only do this if you're the bot's only user. |
 | `BWRAP` | no | Path to `bwrap` if it isn't on `PATH`. |
+| `GEMINI_API_KEY` | no | [Gemini API](https://ai.google.dev/) key. When set, resume tailoring is done by Gemini (see below); without it the built-in scorer is used. |
+| `GEMINI_MODEL` | no | Gemini model name, default `gemini-flash-latest`. |
 | `BRAVE_API_KEY` | no | [Brave Search API](https://brave.com/search/api/) key. Shows likely recruiters inline in Apply threads; without it you still get the search buttons. (Google's Custom Search API isn't an option: it's closed to new customers and shuts down January 1, 2027.) |
 
 Discord setup: create an application, enable **Message Content Intent** on the

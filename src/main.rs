@@ -191,7 +191,7 @@ async fn start_application(
     thread.send_message(http, serenity::CreateMessage::new().embed(embed).components(rows)).await?;
 
     let name = user.global_name.clone().unwrap_or_else(|| user.name.clone());
-    commands::resume::tailor_into_thread(http, pool, thread, user_id, &name, &job).await;
+    commands::resume::tailor_into_thread(http, pool, client, thread, user_id, &name, &job).await;
     Ok(())
 }
 
