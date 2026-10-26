@@ -14,6 +14,7 @@ pub mod greenhouse;
 pub mod jibe;
 pub mod lever;
 pub mod location;
+pub mod oracle;
 pub mod text;
 pub mod workday;
 
@@ -45,6 +46,7 @@ pub async fn scrape_company(company: &Company, seen: HashSet<String>, client: Cl
         Board::Greenhouse { .. } => greenhouse::scrape(company.id, &board, &seen, &client).await,
         Board::Lever { .. } => lever::scrape(company.id, &board, &seen, &client).await,
         Board::Ashby { .. } => ashby::scrape(company.id, &board, &seen, &client).await,
+        Board::Oracle { .. } => oracle::scrape(company.id, &board, &seen, &client).await,
     }
 }
 

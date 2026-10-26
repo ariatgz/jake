@@ -8,6 +8,7 @@ mod pipeline;
 mod resume;
 mod scheduler;
 mod scrapers;
+mod worker;
 
 use poise::serenity_prelude as serenity;
 use std::env::var;
@@ -49,8 +50,24 @@ pub struct ScrapeEvent {
 pub struct Data {
     pub pool: sqlx::PgPool,
     pub client: reqwest::Client,
-    /// Held while a scrape (manual or scheduled) is running so two never overlap.
+    /// Held by the scraper thread while a scrape is running, and briefly by
+    /// the "Show next" button, so a batch is never posted twice at once.
     pub scrape_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Runs scrapes on their own thread; see `worker`.
+    pub scraper: worker::Handle,
+}
+
+const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36";
+
+/// Browser-like client. Careers sites behind Cloudflare and friends answer 403
+/// to requests without an Accept-Language header, so the defaults look like a
+/// real browser; API scrapers override Accept per request.
+pub fn http_client(user_agent: &str) -> reqwest::Result<reqwest::Client> {
+    use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE};
+    let mut headers = HeaderMap::new();
+    headers.insert(ACCEPT, HeaderValue::from_static("text/html,application/xhtml+xml,application/json,*/*;q=0.8"));
+    headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.9"));
+    reqwest::Client::builder().user_agent(user_agent).default_headers(headers).timeout(Duration::from_secs(40)).build()
 }
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -252,10 +269,7 @@ async fn main() -> Result<(), Error> {
         .connect(&conn_str)
         .await?;
 
-    let client = reqwest::Client::builder()
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36")
-        .timeout(Duration::from_secs(40))
-        .build()?;
+    let client = http_client(USER_AGENT)?;
 
     let interval_minutes = var("SCRAPE_INTERVAL_MINUTES")
         .ok()
@@ -311,16 +325,11 @@ async fn main() -> Result<(), Error> {
                 println!("Logged in as {}", ready.user.name);
                 poise::builtins::register_globally(ctx, &framework.options().commands).await?;
 
-                scheduler::spawn(
-                    ctx.http.clone(),
-                    pool.clone(),
-                    client.clone(),
-                    scrape_lock.clone(),
-                    Duration::from_secs(interval_minutes * 60),
-                );
+                let scraper = worker::spawn(ctx.http.clone(), conn_str.clone(), USER_AGENT.to_string(), scrape_lock.clone());
+                scheduler::spawn(scraper.clone(), pool.clone(), Duration::from_secs(interval_minutes * 60));
                 scheduler::spawn_follow_ups(ctx.http.clone(), pool.clone());
 
-                Ok(Data { pool, client, scrape_lock })
+                Ok(Data { pool, client, scrape_lock, scraper })
             })
         })
         .options(options)

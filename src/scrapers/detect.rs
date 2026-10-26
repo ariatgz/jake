@@ -24,6 +24,15 @@ pub enum Board {
     Greenhouse { token: String },
     Lever { token: String },
     Ashby { token: String },
+    /// Oracle Cloud HCM candidate experience sites (e.g. onsemi).
+    Oracle {
+        /// `https://hctz.fa.us2.oraclecloud.com`
+        base: String,
+        /// `CX_1001`
+        site: String,
+        /// Free-text search applied to the listing, usually "Intern".
+        keyword: String,
+    },
 }
 
 impl Board {
@@ -34,6 +43,7 @@ impl Board {
             Board::Greenhouse { .. } => "GREENHOUSE",
             Board::Lever { .. } => "LEVER",
             Board::Ashby { .. } => "ASHBY",
+            Board::Oracle { .. } => "ORACLE",
         }
     }
 
@@ -68,6 +78,13 @@ impl Board {
             Board::Greenhouse { token } => format!("https://job-boards.greenhouse.io/{token}"),
             Board::Lever { token } => format!("https://jobs.lever.co/{token}"),
             Board::Ashby { token } => format!("https://jobs.ashbyhq.com/{token}"),
+            Board::Oracle { base, site, keyword } => {
+                let mut url = Url::parse(&format!("{base}/hcmUI/CandidateExperience/en/sites/{site}/requisitions")).expect("valid oracle url");
+                if !keyword.is_empty() {
+                    url.query_pairs_mut().append_pair("keyword", keyword);
+                }
+                without_empty_query(url)
+            }
         }
     }
 
@@ -81,8 +98,19 @@ impl Board {
                 .map(|d| titleize(&d))
                 .unwrap_or_else(|| "Company".to_string()),
             Board::Greenhouse { token } | Board::Lever { token } | Board::Ashby { token } => titleize(token),
+            // Oracle hosts are shared (hctz.fa.us2...), so the URL says nothing about the company.
+            Board::Oracle { .. } => "Company".to_string(),
         }
     }
+}
+
+/// Analytics and ad-click parameters that sites append to links. They are not
+/// board facets, and Workday answers HTTP 400 when they are sent as one.
+pub fn is_tracking_param(key: &str) -> bool {
+    let k = key.to_ascii_lowercase();
+    k.starts_with('_')
+        || k.starts_with("utm_")
+        || matches!(k.as_str(), "gclid" | "gbraid" | "wbraid" | "fbclid" | "msclkid" | "dclid" | "mc_cid" | "mc_eid" | "ref" | "source" | "src")
 }
 
 /// `query_pairs_mut` leaves a bare "?" when nothing was appended.
@@ -136,7 +164,7 @@ pub fn from_board_url(raw: &str) -> Option<Board> {
         let mut facets: Vec<(String, Vec<String>)> = Vec::new();
         let mut search_text = String::new();
         for (key, value) in url.query_pairs() {
-            if value.is_empty() {
+            if value.is_empty() || is_tracking_param(&key) {
                 continue;
             }
             if key == "q" {
@@ -184,10 +212,17 @@ pub fn from_board_url(raw: &str) -> Option<Board> {
         let base = format!("{}://{}", url.scheme(), host);
         let query = url
             .query_pairs()
-            .filter(|(k, v)| k != "page" && !v.is_empty())
+            .filter(|(k, v)| k != "page" && !v.is_empty() && !is_tracking_param(k))
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
         return Some(Board::Jibe { base, query });
+    }
+
+    // https://hctz.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001/requisitions?keyword=Intern
+    if host.ends_with(".oraclecloud.com") {
+        let site = segments.iter().position(|s| *s == "sites").and_then(|i| segments.get(i + 1))?.to_string();
+        let keyword = url.query_pairs().find(|(k, _)| k == "keyword").map(|(_, v)| v.trim().to_string()).unwrap_or_default();
+        return Some(Board::Oracle { base: format!("https://{host}"), site, keyword });
     }
 
     None
@@ -201,14 +236,21 @@ pub async fn detect(client: &Client, raw: &str) -> Result<Board, Error> {
     }
 
     let url = Url::parse(raw.trim()).map_err(|_| format!("`{raw}` is not a valid URL"))?;
-    let html = client
+    let response = client
         .get(url.clone())
-        .header(reqwest::header::ACCEPT, "text/html,*/*")
+        .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml,*/*;q=0.8")
         .send()
-        .await?
-        .error_for_status()?
-        .text()
-        .await?;
+        .await
+        .map_err(|e| format!("Couldn't load {raw}: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "{raw} answered HTTP {}. Some careers sites block bots; paste the job board link itself instead \
+             (the `myworkdayjobs.com`, `greenhouse.io`, `lever.co`, `ashbyhq.com` or `oraclecloud.com` URL behind the page).",
+            response.status()
+        )
+        .into());
+    }
+    let html = response.text().await?;
 
     if let Some(board) = from_html(&html, &url) {
         return Ok(board);
@@ -250,6 +292,11 @@ fn from_html(html: &str, page: &Url) -> Option<Board> {
         return from_board_url(&format!("https://{}/{}", &caps[1], site));
     }
 
+    let oracle = Regex::new(r"https?://([a-z0-9-]+\.fa\.[a-z0-9-]+\.oraclecloud\.com)/hcmUI/CandidateExperience/[a-z]{2}/sites/([A-Za-z0-9_]+)").unwrap();
+    if let Some(caps) = oracle.captures(html) {
+        return Some(Board::Oracle { base: format!("https://{}", &caps[1]), site: caps[2].to_string(), keyword: "Intern".to_string() });
+    }
+
     if html.contains("jibecdn.com") {
         return Some(Board::Jibe {
             base: format!("{}://{}", page.scheme(), page.host_str()?),
@@ -278,6 +325,16 @@ mod tests {
         }
         assert_eq!(from_board_url(&board.canonical_url()), Some(board));
 
+        // Analytics parameters copied from the address bar are not facets.
+        let marvell = from_board_url(
+            "https://marvell.wd1.myworkdayjobs.com/MarvellCareers?_gl=1*12801fn*_gcl_au*NTA0&utm_source=x&workerSubType=65dea26481d001e09dfbab4927173419",
+        )
+        .unwrap();
+        assert_eq!(
+            marvell.canonical_url(),
+            "https://marvell.wd1.myworkdayjobs.com/MarvellCareers?workerSubType=65dea26481d001e09dfbab4927173419"
+        );
+
         let intel = from_board_url("https://intel.wd1.myworkdayjobs.com/en-US/External/job/x/y").unwrap();
         assert!(matches!(intel, Board::Workday { ref site, .. } if site == "External"));
         assert_eq!(intel.suggested_name(), "Intel");
@@ -289,6 +346,9 @@ mod tests {
         assert_eq!(from_board_url("https://boards-api.greenhouse.io/v1/boards/doordashusa/jobs"), Some(Board::Greenhouse { token: "doordashusa".into() }));
         assert_eq!(from_board_url("https://jobs.lever.co/palantir"), Some(Board::Lever { token: "palantir".into() }));
         assert_eq!(from_board_url("https://jobs.ashbyhq.com/etched/7aeafe31"), Some(Board::Ashby { token: "etched".into() }));
+        let onsemi = from_board_url("https://hctz.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001/requisitions?keyword=Intern&mode=location").unwrap();
+        assert_eq!(onsemi, Board::Oracle { base: "https://hctz.fa.us2.oraclecloud.com".into(), site: "CX_1001".into(), keyword: "Intern".into() });
+        assert_eq!(from_board_url(&onsemi.canonical_url()), Some(onsemi));
         let amd = from_board_url("https://careers.amd.com/careers-home/jobs?country=Canada&page=1").unwrap();
         assert_eq!(amd, Board::Jibe { base: "https://careers.amd.com".into(), query: vec![("country".into(), "Canada".into())] });
         assert_eq!(amd.suggested_name(), "Amd");

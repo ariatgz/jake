@@ -1,24 +1,29 @@
 //! Background loop that scrapes for every profile on a fixed interval and
-//! only speaks up when a new matching job appears.
+//! only speaks up when a new matching job appears. The scraping itself happens
+//! on the scraper thread (see `worker`), so this loop just asks for a run and
+//! logs the outcome.
 
 use crate::resume::latex::Document;
-use crate::{db, outreach, pipeline};
+use crate::{db, outreach, worker};
 use poise::serenity_prelude::{ChannelId, Http};
-use reqwest::Client;
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
 
-pub fn spawn(http: Arc<Http>, pool: PgPool, client: Client, lock: Arc<Mutex<()>>, every: Duration) {
+pub fn spawn(scraper: worker::Handle, pool: PgPool, every: Duration) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(every);
+        // A run that overshoots the period must not trigger a burst of catch-up runs.
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         interval.tick().await; // the first tick fires immediately; wait a full period instead
         println!("Scheduler running every {} minutes", every.as_secs() / 60);
 
         loop {
             interval.tick().await;
-            let _guard = lock.lock().await;
+            if scraper.is_busy() {
+                println!("Scheduled scrape skipped: one is already running");
+                continue;
+            }
 
             let profiles = match db::all_profiles(&pool).await {
                 Ok(p) => p,
@@ -31,7 +36,13 @@ pub fn spawn(http: Arc<Http>, pool: PgPool, client: Client, lock: Arc<Mutex<()>>
                 continue;
             }
 
-            let summary = pipeline::run(&http, &pool, &client, &profiles, None).await;
+            let summary = match scraper.run(profiles, None).await {
+                Ok(summary) => summary,
+                Err(worker::Busy) => {
+                    println!("Scheduled scrape skipped: one is already running");
+                    continue;
+                }
+            };
             println!(
                 "Scheduled scrape: {} companies, {} new jobs, {} posted, {} errors",
                 summary.companies_scraped, summary.new_jobs, summary.posted, summary.errors.len()

@@ -184,6 +184,7 @@ fn board_label(board_type: &str) -> &str {
         "GREENHOUSE" => "Greenhouse",
         "LEVER" => "Lever",
         "ASHBY" => "Ashby",
+        "ORACLE" => "Oracle HCM",
         _ => "Careers site",
     }
 }

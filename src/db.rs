@@ -282,7 +282,10 @@ pub async fn seen_urls(pool: &PgPool, company_id: i64) -> Result<HashSet<String>
 /// was already stored (nothing is written in that case).
 pub async fn insert_application(pool: &PgPool, event: &ScrapeEvent) -> Result<Option<i64>, Error> {
     let app = &event.application;
-    let terms = event.terms.clone().unwrap_or_default();
+    // Boards sometimes list the same place twice ("Toronto, Canada; Toronto, ON,
+    // Canada"). Postgres refuses to upsert the same row twice in one statement.
+    let cities = dedup(&event.cities);
+    let terms = dedup(&event.terms.clone().unwrap_or_default());
 
     let row: Option<(i64,)> = sqlx::query_as(
         r#"
@@ -337,12 +340,23 @@ pub async fn insert_application(pool: &PgPool, event: &ScrapeEvent) -> Result<Op
     .bind(app.lower_wage_cents)
     .bind(app.upper_wage_cents)
     .bind(&app.currency)
-    .bind(serde_json::to_value(&event.cities)?)
+    .bind(serde_json::to_value(&cities)?)
     .bind(serde_json::to_value(&terms)?)
     .fetch_optional(pool)
     .await?;
 
     Ok(row.map(|(id,)| id))
+}
+
+/// Removes repeated items while keeping the first occurrence's position.
+fn dedup<T: Clone + PartialEq>(items: &[T]) -> Vec<T> {
+    let mut out: Vec<T> = Vec::with_capacity(items.len());
+    for item in items {
+        if !out.contains(item) {
+            out.push(item.clone());
+        }
+    }
+    out
 }
 
 /// Jobs from the given companies, stored after `after_id`, that this user has

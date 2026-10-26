@@ -24,12 +24,19 @@ and light enough to run 24/7 on a Raspberry Pi.
   - **Jibe / iCIMS** career sites (e.g. `careers.amd.com/careers-home/jobs`)
     via `/api/jobs`. Query filters such as `country=Canada` are honoured.
   - **Greenhouse**, **Lever** and **Ashby** boards via their public APIs.
+  - **Oracle Cloud HCM** candidate sites (`*.oraclecloud.com/hcmUI/CandidateExperience/...`,
+    e.g. onsemi) via their REST API. A `?keyword=Intern` filter in the URL is honoured.
   - Company pages that merely *embed* one of those boards (e.g.
-    `asteralabs.com/careers`) are detected by scanning the page.
+    `asteralabs.com/early-career-programs`) are detected by scanning the page.
+  - Analytics junk in a pasted URL (`_gl=`, `utm_*`, `gclid`, ...) is dropped, so
+    it is never sent to a board as a filter.
 - **Hand-written scrapers** for Google, Amazon, Jane Street, DoorDash and Stripe
   carried over from the original version.
 - **30-minute background scheduler.** Silent unless a new job matches someone's
-  profile. `/scrape` runs the same pipeline on demand.
+  profile. `/scrape` runs the same pipeline on demand. Scrapes run on their own
+  thread with their own database pool and HTTP client, so commands and buttons
+  stay responsive while one is running; a run that hangs is cut off after 25
+  minutes (`SCRAPE_TIMEOUT_MINUTES`).
 - **Anti-spam.** Jobs are stored once by URL; a `(job, user)` notification row is
   written when a posting is sent, so nobody is pinged twice about the same job.
 - **Application tracking.** Each posting has Apply / Ignore buttons. Apply opens
@@ -137,13 +144,22 @@ Guaranteed rules: Education is never changed, each job keeps at least two
 bullets, each project keeps its first bullet, and at least two projects stay.
 
 **With Gemini.** If `GEMINI_API_KEY` is set, steps 1 to 4 are done by Gemini
-instead: the bot sends the master `.tex` and the posting with the same rules
-(reorder, trim, lightly reword, never invent, Education untouched, fit the page
-limit), takes the `.tex` it returns, runs the same safety checks, and compiles it
-in the sandbox. If the result is over the page limit or doesn't compile, Gemini
-is told and asked again, up to three times. The report then compares keyword
-coverage before and after; the "moved/cut" details only exist for the built-in
-scorer. If the API call fails, the built-in tailoring runs and the report says so.
+instead, and it goes further than the built-in scorer. The bot sends the master
+`.tex`, the posting and the list of keywords it extracted (required first), and
+asks Gemini to optimise the resume for that posting the way an ATS specialist
+would: work the posting's exact keywords and phrasing into the skills lines and
+bullets wherever the resume has evidence for them, rewrite bullets to lead with
+what the posting cares about, reorder bullets, projects, skills and (where the
+template allows) sections by relevance, then trim to the page limit. The hard
+limits stay: nothing is invented, a keyword is only added where the master
+resume shows the candidate used it or a direct equivalent, and the header and
+Education are untouched. The returned `.tex` goes through the same safety checks
+and is compiled in the sandbox. If the result is over the page limit or doesn't
+compile, Gemini is told and asked again, up to three times. The report compares
+keyword coverage before and after and lists the keywords that are newly
+mentioned, so you can check each one is true of you before sending. The
+"moved/cut" details only exist for the built-in scorer. If the API call fails,
+the built-in tailoring runs and the report says so.
 
 Optional markers, written as LaTeX comments so they never show in the PDF:
 
@@ -212,8 +228,8 @@ week later, then stops. `/outreach list` shows everyone you're waiting on.
 | Altera | Workday | Intern/Student job family |
 | Intel | Workday | Intern job family (the unfiltered site has thousands of postings) |
 | NVIDIA | Workday | University Employment job family |
-| onsemi | Workday | Site was returning server errors when seeded; may need its URL corrected |
-| Astera Labs | Greenhouse | |
+| onsemi | Oracle HCM | `keyword=Intern` search on onsemi's Oracle careers site (they left Workday) |
+| Astera Labs | Greenhouse | Separate early-career board (`asteraearlycareer2027`): interns and new grads, Toronto, Vancouver, Ottawa |
 | Etched | Ashby | |
 | Marvell | Workday | Intern category; Toronto, Ottawa |
 | Cadence | Workday | Intern category; Ontario, Quebec |
@@ -222,7 +238,7 @@ week later, then stops. `/outreach list` shows everyone you're waiting on.
 | Microchip | Workday | Student/Intern category; Burnaby, Ottawa, Toronto |
 | General Motors | Workday | Intern and Co-op categories; Markham technical centre |
 | BlackBerry | Workday | Whole board (small); QNX in Ottawa and Waterloo |
-| Tenstorrent | Greenhouse | Toronto |
+| Tenstorrent | Greenhouse | Toronto; the university page lists the same board |
 | Lightmatter | Greenhouse | Toronto; most postings list pay |
 | Cerebras | Ashby | Toronto |
 | Kepler Communications | Lever | Toronto |
@@ -250,6 +266,8 @@ Environment variables (from `.env`):
 | `DATABASE_URL` | yes | Postgres connection string. For Supabase use the IPv4 session pooler on port 5432 unless your network has IPv6. |
 | `DISCORD_TOKEN` | yes | Bot token. The bot needs the Message Content intent enabled. |
 | `SCRAPE_INTERVAL_MINUTES` | no | Scheduler period, default 30. |
+| `SCRAPE_TIMEOUT_MINUTES` | no | A scrape running longer than this is abandoned, default 25. |
+| `SCRAPER_THREADS` | no | Worker threads for the scraper runtime, default 1. Raise it on a machine with spare cores. |
 | `PDFLATEX` | no | Path to `pdflatex` for resume tailoring; defaults to `pdflatex` on `PATH`. Without it, tailored resumes come as `.tex` only. |
 | `RESUME_SANDBOX` | no | Set to `off` to compile resumes without bubblewrap. Only do this if you're the bot's only user. |
 | `BWRAP` | no | Path to `bwrap` if it isn't on `PATH`. |

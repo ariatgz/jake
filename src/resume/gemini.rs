@@ -98,31 +98,79 @@ struct PromptFeedback {
 
 fn system_prompt(max_pages: u32) -> String {
     format!(
-        "You tailor a candidate's LaTeX resume to one job posting.\n\
-         You receive the complete master resume (.tex) and the posting. Reply with the complete, \
-         compilable .tex file and nothing else: no explanation, no Markdown code fences.\n\
+        "You are an expert resume writer and ATS (applicant tracking system) specialist. You rewrite a \
+         candidate's LaTeX master resume into the strongest possible version for ONE job posting, so that \
+         both the ATS keyword screen and a 10-second recruiter skim rank it highly.\n\
+         You receive the posting, a list of target keywords pulled from it, and the complete master resume \
+         (.tex). Reply with the complete, compilable .tex file and nothing else: no explanation, no \
+         Markdown code fences.\n\
          \n\
-         Rules:\n\
-         1. Keep the preamble, document class, packages, custom macros and formatting exactly as they are. \
-         Never add packages, and never use commands that read files, run programs or include images.\n\
-         2. Never invent anything. No new employers, titles, dates, projects, skills, tools, numbers or claims. \
-         Every fact in your output must already be in the master resume.\n\
-         3. You may reorder bullets within a job, reorder projects, reorder the skills lines, drop the least \
-         relevant bullets and projects, and lightly reword existing bullets so the skills and keywords the \
-         posting asks for come first. Rewording keeps the same facts and the same meaning.\n\
-         4. Leave the header, contact details and the Education section unchanged.\n\
-         5. Each job keeps at least two bullets. Keep at least two projects. A project's first bullet stays \
-         first. Items with a `% @keep` comment are never removed.\n\
-         6. The compiled result must fit on at most {max_pages} page{}. Cut whole off-topic projects first, \
-         then the weakest bullets from the longest lists. Do not shrink fonts or margins to make it fit.\n\
-         7. Only use LaTeX macros that the master resume already uses.",
+         How to tailor (do all of these, not just reordering):\n\
+         1. KEYWORDS. Work every target keyword and phrase the posting uses into the resume wherever the \
+         candidate's experience genuinely covers it. Use the posting's exact wording, spelling and \
+         capitalisation (\"Design Verification\" if the posting says that, not \"DV\"; include both when \
+         the posting uses both). Spell out acronyms once with the acronym in brackets. Required keywords \
+         matter more than nice-to-haves; the job title's keywords matter most. Required keywords should \
+         appear in the skills section AND in at least one bullet when the evidence exists.\n\
+         2. REWRITE bullets, don't just shuffle them. Rephrase each bullet you keep so it leads with the \
+         action and technology the posting cares about, mirrors the posting's own verbs and vocabulary, \
+         keeps every number and outcome, and stays one or two lines. Strong verb first, no first person, \
+         no filler.\n\
+         3. REARRANGE for relevance. Order bullets within each job most-relevant-first, order projects \
+         most-relevant-first, and reorder the entries on the skills lines so matching skills come first. \
+         If the template's sections can be reordered (for example Projects before Experience when the \
+         projects fit the posting better), do it; the header and Education stay where they are.\n\
+         4. SKILLS LINES. Add a target keyword to the skills lines when a bullet, project or listed skill \
+         already shows the candidate used that thing or a direct equivalent (a UART driver in C is \
+         evidence for \"Embedded C\" and \"Serial protocols\"; Verilog coursework is evidence for \"RTL \
+         design\"). Rename listed skills to the posting's phrasing. Group related skills under the \
+         existing categories.\n\
+         5. TRIM. Drop whole off-topic projects first, then the weakest bullets from the longest lists, \
+         until it fits on at most {max_pages} page{}. Do not shrink fonts, margins or spacing.\n\
+         \n\
+         Hard limits (never break these):\n\
+         - Never fabricate. No new employers, titles, dates, degrees, certifications, projects, numbers, \
+         outcomes or responsibilities. A keyword may only be added where the master resume contains \
+         evidence for it; if there is no evidence, leave it out, even if it is required.\n\
+         - Keep the preamble, document class, packages, custom macros and formatting exactly as they are. \
+         Never add packages, and never use commands that read files, run programs or include images. \
+         Only use LaTeX macros the master resume already uses.\n\
+         - Leave the header, contact details and the Education section unchanged.\n\
+         - Each job keeps at least two bullets. Keep at least two projects. A project's first bullet \
+         stays first (it says what the project is). Items with a `% @keep` comment are never removed.\n\
+         - Escape LaTeX special characters in any text you write (& % $ # _).",
         if max_pages == 1 { "" } else { "s" }
     )
 }
 
-fn first_prompt(master: &str, title: &str, body: &str) -> String {
+/// "name (required)" lines for the keywords the bot extracted from the posting,
+/// so the model knows exactly what the ATS will look for.
+fn keyword_lines(posting: &[skills::PostingSkill]) -> String {
+    let mut sorted: Vec<&skills::PostingSkill> = posting.iter().collect();
+    sorted.sort_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap_or(std::cmp::Ordering::Equal));
+    let mut lines: Vec<String> = Vec::new();
+    for skill in sorted {
+        let tag = match skill.importance {
+            skills::Importance::Required => "required",
+            skills::Importance::Preferred => "nice to have",
+            skills::Importance::Mentioned => "mentioned",
+        };
+        lines.push(format!("- {} ({tag})", skill.name));
+    }
+    if lines.is_empty() {
+        "- (none detected automatically; take them from the posting text)".to_string()
+    } else {
+        lines.join("\n")
+    }
+}
+
+fn first_prompt(master: &str, title: &str, body: &str, posting: &[skills::PostingSkill]) -> String {
     let body: String = body.chars().take(MAX_POSTING_CHARS).collect();
-    format!("JOB TITLE:\n{title}\n\nJOB POSTING:\n{body}\n\nMASTER RESUME (.tex):\n{master}")
+    format!(
+        "JOB TITLE:\n{title}\n\nTARGET KEYWORDS (from the posting, most important first):\n{}\n\n\
+         JOB POSTING:\n{body}\n\nMASTER RESUME (.tex):\n{master}",
+        keyword_lines(posting)
+    )
 }
 
 /// Pulls the LaTeX document out of a reply, tolerating code fences and chatter.
@@ -162,7 +210,7 @@ async fn generate_once(client: &Client, key: &str, model: &str, system: &str, hi
     let request = Request {
         system_instruction: Content { role: "system".into(), parts: vec![Part { text: system.to_string() }] },
         contents: history,
-        generation_config: GenerationConfig { temperature: 0.2, max_output_tokens: 32_768 },
+        generation_config: GenerationConfig { temperature: 0.35, max_output_tokens: 32_768 },
     };
     let response = client
         .post(&url)
@@ -224,7 +272,7 @@ pub async fn tailor(client: &Client, master: &str, title: &str, body: &str, max_
     let posting = skills::extract(&knowledge.vocab, title, body);
 
     let system = system_prompt(max_pages);
-    let mut history = vec![Content::user(first_prompt(master, title, body))];
+    let mut history = vec![Content::user(first_prompt(master, title, body, &posting))];
     let mut best: Option<(String, Compiled)> = None;
     let mut notes = Vec::new();
     let mut last_problem = String::new();
@@ -249,6 +297,16 @@ pub async fn tailor(client: &Client, master: &str, title: &str, body: &str, max_
                 let report = report_for(&master_doc, &knowledge, &posting, &tex);
                 if posting.is_empty() {
                     notes.push("The posting doesn't name any skills the bot recognises; the keyword numbers above mean little.".into());
+                }
+                let gained: Vec<&str> = report
+                    .after
+                    .matched
+                    .iter()
+                    .filter(|s| !report.before.matched.iter().any(|b| b.name == s.name))
+                    .map(|s| s.name.as_str())
+                    .collect();
+                if !gained.is_empty() {
+                    notes.push(format!("Now mentions: {}. Check each one is true of you before sending.", gained.join(", ")));
                 }
                 return Ok(Tailored { tex, pages: Some(c.pages), pdf: Some(c.pdf), report, notes, by_ai: Some(model) });
             }

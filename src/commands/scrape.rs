@@ -1,4 +1,4 @@
-use crate::{db, pipeline, Context, Error};
+use crate::{db, worker, Context, Error};
 
 /// Scrape your tracked companies now and post matching jobs here
 #[poise::command(slash_command, guild_only)]
@@ -19,19 +19,14 @@ pub async fn scrape(ctx: Context<'_>) -> Result<(), Error> {
         return Ok(());
     }
 
-    let Ok(_guard) = ctx.data().scrape_lock.try_lock() else {
-        ctx.say("A scrape is already running. Try again in a minute.").await?;
-        return Ok(());
+    // The work happens on the scraper thread; this handler only waits for the summary.
+    let summary = match ctx.data().scraper.run(vec![profile], Some(ctx.channel_id())).await {
+        Ok(summary) => summary,
+        Err(worker::Busy) => {
+            ctx.say("A scrape is already running. Try again in a minute.").await?;
+            return Ok(());
+        }
     };
-
-    let summary = pipeline::run(
-        &ctx.serenity_context().http,
-        pool,
-        &ctx.data().client,
-        std::slice::from_ref(&profile),
-        Some(ctx.channel_id()),
-    )
-    .await;
 
     ctx.say(summary.describe()).await?;
     Ok(())

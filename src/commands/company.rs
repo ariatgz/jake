@@ -29,6 +29,8 @@ fn homepage_for(board: &detect::Board, given_url: &str) -> (String, String) {
             if parts.len() >= 2 { parts[parts.len() - 2..].join(".") } else { host }
         }
         (detect::Board::Workday { tenant, .. }, true) => format!("{tenant}.com"),
+        // Shared Oracle host; nothing in the URL names the company.
+        (detect::Board::Oracle { .. }, true) => "example.com".to_string(),
         (detect::Board::Greenhouse { token } | detect::Board::Lever { token } | detect::Board::Ashby { token }, true) => {
             format!("{}.com", token.replace(['-', '_'], ""))
         }
