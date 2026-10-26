@@ -2,7 +2,7 @@
 
 use crate::resume::{self, ResumeKnowledge};
 use crate::scrapers::location::format_city;
-use crate::{contacts, db, filter, flags, scrapers, Company, Error, Profile};
+use crate::{contacts, db, filter, flags, scrapers, telegram, Company, Error, Profile};
 use db::Candidate;
 use futures::{stream, StreamExt};
 use poise::serenity_prelude as serenity;
@@ -80,7 +80,7 @@ pub async fn run(http: &Http, pool: &PgPool, client: &Client, profiles: &[Profil
     // 3. Match and notify per profile.
     for profile in profiles {
         let channel = channel_override.unwrap_or(ChannelId::new(profile.channel_id as u64));
-        notify_profile(http, pool, profile, channel, &mut summary).await;
+        notify_profile(http, pool, client, profile, channel, &mut summary).await;
     }
 
     summary
@@ -88,7 +88,7 @@ pub async fn run(http: &Http, pool: &PgPool, client: &Client, profiles: &[Profil
 
 /// Posts the next batch of matches for one profile, then a "Show next" button
 /// if more are waiting. Used after a scrape and by that button.
-pub async fn notify_profile(http: &Http, pool: &PgPool, profile: &Profile, channel: ChannelId, summary: &mut RunSummary) {
+pub async fn notify_profile(http: &Http, pool: &PgPool, client: &Client, profile: &Profile, channel: ChannelId, summary: &mut RunSummary) {
     let who = &profile.display_name;
     let tracked = match db::tracked_companies(pool, profile.user_id).await {
         Ok(t) => t,
@@ -133,6 +133,7 @@ pub async fn notify_profile(http: &Http, pool: &PgPool, profile: &Profile, chann
 
     let mut posted = 0;
     let mut failed = false;
+    let mut sent: Vec<(&Company, &Candidate)> = Vec::new();
     for candidate in matches.iter().take(BATCH_SIZE) {
         let company = company_map[&candidate.company_id];
         match post(http, channel, profile, company, candidate, knowledge.as_ref()).await {
@@ -141,6 +142,7 @@ pub async fn notify_profile(http: &Http, pool: &PgPool, profile: &Profile, chann
                     summary.errors.push(format!("{who}: recording notification: {e}"));
                 }
                 posted += 1;
+                sent.push((company, candidate));
             }
             Err(e) => {
                 summary.errors.push(format!("{who}: posting `{}`: {e}", candidate.job_title));
@@ -152,6 +154,23 @@ pub async fn notify_profile(http: &Http, pool: &PgPool, profile: &Profile, chann
     let remaining = matches.len() - posted;
     summary.posted += posted;
     summary.remaining += remaining;
+
+    if let (Some(chat_id), Some(token)) = (profile.telegram_chat_id, telegram::token()) {
+        for (i, (company, candidate)) in sent.iter().enumerate() {
+            if i > 0 {
+                // Telegram allows about one message per second to the same chat.
+                tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+            }
+            let mut text = telegram_text(company, candidate);
+            if i + 1 == sent.len() && remaining > 0 {
+                text.push_str(&format!("\n\n{remaining} more match{} waiting in Discord.", if remaining == 1 { "" } else { "es" }));
+            }
+            if let Err(e) = telegram::send(client, &token, chat_id, &text).await {
+                summary.errors.push(format!("{who}: Telegram alert: {e}"));
+                break;
+            }
+        }
+    }
 
     if remaining == 0 && !failed {
         if let Some(newest) = newest {
@@ -177,7 +196,7 @@ pub async fn notify_profile(http: &Http, pool: &PgPool, profile: &Profile, chann
     }
 }
 
-fn board_label(board_type: &str) -> &str {
+pub fn board_label(board_type: &str) -> &str {
     match board_type {
         "WORKDAY" => "Workday",
         "JIBE" => "iCIMS/Jibe",
@@ -185,6 +204,8 @@ fn board_label(board_type: &str) -> &str {
         "LEVER" => "Lever",
         "ASHBY" => "Ashby",
         "ORACLE" => "Oracle HCM",
+        "SMARTRECRUITERS" => "SmartRecruiters",
+        "WORKABLE" => "Workable",
         _ => "Careers site",
     }
 }
@@ -226,17 +247,47 @@ fn names(skills: &[resume::skills::PostingSkill], limit: usize) -> String {
     format!("{}{extra}", out.join(", "))
 }
 
-pub fn build_embed(company: &Company, candidate: &Candidate, knowledge: Option<&ResumeKnowledge>) -> serenity::CreateEmbed {
-    let location = match candidate.cities.first() {
+fn location_text(candidate: &Candidate) -> String {
+    match candidate.cities.first() {
         None => "Not listed".to_string(),
         Some(first) if candidate.cities.len() > 1 => format!("{} (+{} more)", format_city(first), candidate.cities.len() - 1),
         Some(first) => format_city(first),
-    };
-    let pay = match (candidate.lower_wage_cents, candidate.upper_wage_cents) {
+    }
+}
+
+fn pay_text(candidate: &Candidate) -> String {
+    match (candidate.lower_wage_cents, candidate.upper_wage_cents) {
         (Some(lower), Some(upper)) => format!("${}–{}/hr {}", lower / 100, upper / 100, candidate.currency),
         (Some(lower), None) => format!("${}/hr {}", lower / 100, candidate.currency),
         (None, _) => "Not listed".to_string(),
+    }
+}
+
+/// Telegram copy of one job alert.
+fn telegram_text(company: &Company, candidate: &Candidate) -> String {
+    let title: String = candidate.job_title.chars().take(200).collect();
+    let title = if link_button_ok(&candidate.url) {
+        format!("<a href=\"{}\">{}</a>", telegram::escape_attr(&candidate.url), telegram::escape(&title))
+    } else {
+        telegram::escape(&title)
     };
+    let mut text = format!(
+        "<b>New job match</b>\n<b>{title}</b>\n{}\n{} · {}",
+        telegram::escape(&company.display_name),
+        telegram::escape(&location_text(candidate)),
+        telegram::escape(&pay_text(candidate)),
+    );
+    if !candidate.terms.is_empty() {
+        let terms: Vec<&str> = candidate.terms.iter().map(|t| t.display_name.as_str()).collect();
+        text.push_str(&format!("\nTerm: {}", telegram::escape(&terms.join(", "))));
+    }
+    text.push_str("\n\nApply or Ignore from the alert in Discord.");
+    text
+}
+
+pub fn build_embed(company: &Company, candidate: &Candidate, knowledge: Option<&ResumeKnowledge>) -> serenity::CreateEmbed {
+    let location = location_text(candidate);
+    let pay = pay_text(candidate);
 
     let title: String = candidate.job_title.chars().take(256).collect();
     let mut colour = u32::from_str_radix(&company.hex_code.replace('#', ""), 16).unwrap_or(0x5865F2);
@@ -420,5 +471,39 @@ mod tests {
         let cut = snippet(text, 30);
         assert!(cut.ends_with('…') && cut.chars().count() <= 31, "{cut}");
         assert_eq!(snippet("Short.", 50), "Short.");
+    }
+
+    #[test]
+    fn telegram_job_text() {
+        let company = Company {
+            id: 1,
+            display_name: "AT&T".into(),
+            url: String::new(),
+            hex_code: String::new(),
+            icon_url: String::new(),
+            board_type: "WORKABLE".into(),
+            board_url: None,
+        };
+        let job = |title: &str, url: &str| Candidate {
+            application_id: 1,
+            company_id: 1,
+            board_type: "WORKABLE".into(),
+            job_title: title.into(),
+            url: url.into(),
+            page_content: String::new(),
+            lower_wage_cents: Some(3550),
+            upper_wage_cents: None,
+            currency: "USD".into(),
+            cities: vec![crate::City { display_name: "Dallas".into(), region: "TX".into(), country: "US".into() }],
+            terms: Vec::new(),
+        };
+        let a = job("<Firmware> Intern", "https://apply.workable.com/j/1?a=1&b=\"2\"");
+        let b = job("Hardware Intern", "javascript:alert(1)");
+        let text = telegram_text(&company, &a);
+        assert!(text.starts_with("<b>New job match</b>\n"), "{text}");
+        assert!(text.contains("<b><a href=\"https://apply.workable.com/j/1?a=1&amp;b=&quot;2&quot;\">&lt;Firmware&gt; Intern</a></b>\nAT&amp;T\n"), "{text}");
+        assert!(text.contains("Dallas, TX, US · $35/hr USD"), "{text}");
+        let text = telegram_text(&company, &b);
+        assert!(text.contains("<b>Hardware Intern</b>") && !text.contains("javascript:"), "{text}");
     }
 }

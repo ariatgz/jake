@@ -88,6 +88,7 @@ async fn status_reply(ctx: Context<'_>, user_id: i64) -> Result<CreateReply, Err
     let embed = serenity::CreateEmbed::new()
         .title(format!("Profile for {}", profile.display_name))
         .field("Notifications go to", format!("<#{}>", profile.channel_id), false)
+        .field("Telegram", if profile.telegram_chat_id.is_some() { "linked" } else { "off (`/telegram link`)" }, false)
         .field("Seniority (title must contain one)", list_or_any(&profile.seniority), false)
         .field(keyword_label, list_or_any(&profile.keywords), false)
         .field(

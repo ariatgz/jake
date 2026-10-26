@@ -190,6 +190,29 @@ pub fn parse_location(raw: &str) -> City {
     City { display_name: tidy_city_name(&city), region, country }
 }
 
+/// A city from separate fields as boards like SmartRecruiters and Workable send
+/// them; country and region may be names or codes. `None` when all are empty.
+pub fn city_from_parts(city: &str, region: &str, country: &str) -> Option<City> {
+    let country = normalize_country(country);
+    let mut region = normalize_region(region);
+    if let Some((code, _)) = region_from_code(&region.to_uppercase()).filter(|(_, c)| *c == country) {
+        region = code.to_string();
+    }
+    let city = city.trim();
+    // SmartRecruiters sends cities in lowercase ("bengaluru").
+    let mut display_name = if city.chars().any(char::is_uppercase) { tidy_city_name(city) } else { tidy_city_name(&city.to_uppercase()) };
+    if display_name.is_empty() {
+        display_name = region_name(&region)
+            .or_else(|| country_name(&country))
+            .map(|n| tidy_city_name(&n.to_uppercase()))
+            .unwrap_or_default();
+    }
+    if display_name.is_empty() && region.is_empty() && country.is_empty() {
+        return None;
+    }
+    Some(City { display_name, region, country })
+}
+
 /// "Toronto, ON, CA" style label for embeds; skips empty parts.
 pub fn format_city(city: &City) -> String {
     [city.display_name.as_str(), city.region.as_str(), city.country.as_str()]
@@ -239,5 +262,15 @@ mod tests {
         assert_eq!(normalize_country("United States"), "US");
         assert_eq!(tidy_city_name("MARKHAM"), "Markham");
         assert_eq!(tidy_city_name("Santa Clara"), "Santa Clara");
+    }
+
+    #[test]
+    fn structured_parts() {
+        let city = |c: &str, r: &str, n: &str| city_from_parts(c, r, n).map(|c| (c.display_name, c.region, c.country));
+        assert_eq!(city("bengaluru", "", "in"), Some(("Bengaluru".into(), "".into(), "IN".into())));
+        assert_eq!(city("Toronto", "on", "CA"), Some(("Toronto".into(), "ON".into(), "CA".into())));
+        assert_eq!(city("New York", "New York", "United States"), Some(("New York".into(), "NY".into(), "US".into())));
+        assert_eq!(city("", "", "FR"), Some(("France".into(), "".into(), "FR".into())));
+        assert_eq!(city("", "", ""), None);
     }
 }

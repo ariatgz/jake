@@ -24,6 +24,10 @@ and light enough to run 24/7 on a Raspberry Pi.
   - **Jibe / iCIMS** career sites (e.g. `careers.amd.com/careers-home/jobs`)
     via `/api/jobs`. Query filters such as `country=Canada` are honoured.
   - **Greenhouse**, **Lever** and **Ashby** boards via their public APIs.
+  - **SmartRecruiters** (`jobs.smartrecruiters.com/<Company>`) and **Workable**
+    (`apply.workable.com/<account>`) boards via their public APIs. Large
+    SmartRecruiters companies list thousands of jobs; add `?q=intern` to the URL
+    to narrow the listing.
   - **Oracle Cloud HCM** candidate sites (`*.oraclecloud.com/hcmUI/CandidateExperience/...`,
     e.g. onsemi) via their REST API. A `?keyword=Intern` filter in the URL is honoured.
   - Company pages that merely *embed* one of those boards (e.g.
@@ -39,6 +43,9 @@ and light enough to run 24/7 on a Raspberry Pi.
   minutes (`SCRAPE_TIMEOUT_MINUTES`).
 - **Anti-spam.** Jobs are stored once by URL; a `(job, user)` notification row is
   written when a posting is sent, so nobody is pinged twice about the same job.
+- **Cleanup.** Once a day, jobs stored more than 3 months ago that nobody
+  applied to are deleted. Their URLs are remembered, so a posting that is still
+  up is never sent again.
 - **Application tracking.** Each posting has Apply / Ignore buttons. Apply opens
   a thread; `/update` inside the thread moves it through
   ACTIVE → SUBMITTED / REJECTED / DELETED / IGNORED.
@@ -87,6 +94,8 @@ and light enough to run 24/7 on a Raspberry Pi.
 | `/outreach sent <name> [link] [follow_up_days]` | Inside a job thread: log that you messaged someone. A follow-up reminder with a draft is posted in the thread after 5 days (or your choice), then once more a week later. |
 | `/outreach replied [name]` | Inside a job thread: stop reminders for someone who answered. |
 | `/outreach list` | Everyone you're still waiting on, with links to each job thread. |
+| `/telegram link <chat_id>` | Also get a Telegram message for every new match. Press **Start** on the bot in Telegram first; your ID comes from messaging @userinfobot. A test message confirms the link. |
+| `/telegram unlink` | Back to Discord-only alerts. |
 
 ### How matching works
 
@@ -274,6 +283,7 @@ Environment variables (from `.env`):
 | `GEMINI_API_KEY` | no | [Gemini API](https://ai.google.dev/) key. When set, resume tailoring is done by Gemini (see below); without it the built-in scorer is used. |
 | `GEMINI_MODEL` | no | Gemini model name, default `gemini-3.5-flash`. |
 | `BRAVE_API_KEY` | no | [Brave Search API](https://brave.com/search/api/) key. Shows likely recruiters inline in Apply threads; without it you still get the search buttons. (Google's Custom Search API isn't an option: it's closed to new customers and shuts down January 1, 2027.) |
+| `TELEGRAM_BOT_TOKEN` | no | Token of a Telegram bot made with [@BotFather](https://t.me/BotFather) (`/newbot`). Lets users run `/telegram link` to get alerts on Telegram too. |
 
 Discord setup: create an application, enable **Message Content Intent** on the
 Bot page, and invite it with the `bot` and `applications.commands` scopes plus
@@ -373,6 +383,7 @@ src/
   flags.rs         eligibility red flags (citizenship, clearance, grad year, GPA...)
   contacts.rs      contacts in postings, people-search links, Brave search + cache
   outreach.rs      LinkedIn note / message / follow-up drafts
+  telegram.rs      Telegram Bot API calls for alert copies
   pipeline.rs      scrape -> store -> match -> post, shared by /scrape and the scheduler
   scheduler.rs     30-minute loop
   commands/        slash commands (scrape, update, company, profile, resume, outreach)

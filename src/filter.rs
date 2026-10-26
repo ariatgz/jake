@@ -133,6 +133,7 @@ mod tests {
             keywords_title_only: false,
             evaluated_through: 0,
             filters_version: 0,
+            telegram_chat_id: None,
         }
     }
 

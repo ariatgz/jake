@@ -103,3 +103,35 @@ pub fn spawn_follow_ups(http: Arc<Http>, pool: PgPool) {
         }
     });
 }
+
+/// Jobs stored longer ago than this, that nobody applied to, are deleted.
+const PRUNE_AFTER_MONTHS: i32 = 3;
+const CLEANUP_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Keeps the database from growing forever: once a day, deletes old jobs nobody applied to.
+pub fn spawn_cleanup(pool: PgPool) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(CLEANUP_EVERY);
+        loop {
+            interval.tick().await;
+            let mut total = 0;
+            loop {
+                match db::prune_old_jobs(&pool, PRUNE_AFTER_MONTHS).await {
+                    Ok(deleted) => {
+                        total += deleted;
+                        if deleted < db::PRUNE_BATCH {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Cleanup: pruning old jobs failed: {e}");
+                        break;
+                    }
+                }
+            }
+            if total > 0 {
+                println!("Cleanup: deleted {total} jobs older than {PRUNE_AFTER_MONTHS} months that nobody applied to");
+            }
+        }
+    });
+}

@@ -1,6 +1,6 @@
 //! Scrapers. Hand-written ones (Google, Amazon, ...) live next to the generic
-//! board scrapers (Workday, Jibe, Greenhouse, Lever, Ashby). `scrape_company`
-//! picks the right one from `companies.board_type`.
+//! board scrapers (Workday, Jibe, Greenhouse, Lever, Ashby, Oracle, SmartRecruiters,
+//! Workable). `scrape_company` picks the right one from `companies.board_type`.
 
 pub mod amazon;
 pub mod doordash;
@@ -15,7 +15,9 @@ pub mod jibe;
 pub mod lever;
 pub mod location;
 pub mod oracle;
+pub mod smartrecruiters;
 pub mod text;
+pub mod workable;
 pub mod workday;
 
 use crate::{Company, Error, ScrapeEvent};
@@ -47,6 +49,8 @@ pub async fn scrape_company(company: &Company, seen: HashSet<String>, client: Cl
         Board::Lever { .. } => lever::scrape(company.id, &board, &seen, &client).await,
         Board::Ashby { .. } => ashby::scrape(company.id, &board, &seen, &client).await,
         Board::Oracle { .. } => oracle::scrape(company.id, &board, &seen, &client).await,
+        Board::SmartRecruiters { .. } => smartrecruiters::scrape(company.id, &board, &seen, &client).await,
+        Board::Workable { .. } => workable::scrape(company.id, &board, &seen, &client).await,
     }
 }
 

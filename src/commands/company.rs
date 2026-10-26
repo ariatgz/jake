@@ -1,5 +1,5 @@
 use crate::scrapers::detect;
-use crate::{db, Context, Error};
+use crate::{db, pipeline, Context, Error};
 use futures::Stream;
 use url::Url;
 
@@ -15,7 +15,9 @@ fn homepage_for(board: &detect::Board, given_url: &str) -> (String, String) {
     let given_host = given.as_ref().and_then(|u| u.host_str()).map(|h| h.to_lowercase());
 
     let is_board_host = given_host.as_deref().map_or(true, |h| {
-        h.ends_with("myworkdayjobs.com") || h.ends_with("greenhouse.io") || h.ends_with("lever.co") || h.ends_with("ashbyhq.com")
+        ["myworkdayjobs.com", "greenhouse.io", "lever.co", "ashbyhq.com", "oraclecloud.com", "smartrecruiters.com", "workable.com"]
+            .iter()
+            .any(|board| h.ends_with(board))
     });
 
     let domain = match (&board, is_board_host) {
@@ -34,6 +36,8 @@ fn homepage_for(board: &detect::Board, given_url: &str) -> (String, String) {
         (detect::Board::Greenhouse { token } | detect::Board::Lever { token } | detect::Board::Ashby { token }, true) => {
             format!("{}.com", token.replace(['-', '_'], ""))
         }
+        (detect::Board::SmartRecruiters { company, .. }, true) => format!("{}.com", company.to_lowercase()),
+        (detect::Board::Workable { account }, true) => format!("{}.com", account.replace(['-', '_'], "")),
     };
 
     (format!("https://www.{domain}/"), favicon_for(&domain))
@@ -57,7 +61,7 @@ async fn autocomplete_all<'a>(ctx: Context<'_>, partial: &'a str) -> impl Stream
     futures::stream::iter(names.into_iter().filter(move |n| n.to_lowercase().contains(&partial)).take(25))
 }
 
-/// Add a company's careers page to your profile (Workday, Greenhouse, Lever, Ashby, Jibe/iCIMS)
+/// Add a careers page (Workday, Greenhouse, Lever, Ashby, SmartRecruiters, Workable, Oracle, Jibe)
 #[poise::command(slash_command, rename = "add-company", guild_only)]
 pub async fn add_company(
     ctx: Context<'_>,
@@ -87,16 +91,34 @@ pub async fn add_company(
     let company = match db::company_by_board_url(pool, &board_url).await? {
         Some(existing) => existing,
         None => {
-            let display_name = name
-                .map(|n| n.trim().to_string())
-                .filter(|n| !n.is_empty())
-                .unwrap_or_else(|| board.suggested_name());
+            let given = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+            let mut display_name = given.clone().unwrap_or_else(|| board.suggested_name());
+            // Names stay unique: /track-company and /remove-company look companies up by name.
             if let Some(existing) = db::company_by_name(pool, &display_name).await? {
-                existing
-            } else {
-                created = true;
-                let (homepage, icon) = homepage_for(&board, &url);
-                db::insert_company(pool, &display_name, &homepage, DEFAULT_COLOUR, &icon, board.kind(), &board_url).await?
+                if given.is_some() {
+                    ctx.say(format!(
+                        "**{}** is already saved with a different board (<{}>). Use `/track-company` to follow that one, \
+                         or run this again with a different `name` for this board.",
+                        existing.display_name,
+                        existing.board_url.as_deref().unwrap_or(&existing.url)
+                    ))
+                    .await?;
+                    return Ok(());
+                }
+                display_name = format!("{display_name} ({})", pipeline::board_label(board.kind()));
+                if db::company_by_name(pool, &display_name).await?.is_some() {
+                    ctx.say(format!("**{display_name}** is already taken. Run this again with a `name` for this board.")).await?;
+                    return Ok(());
+                }
+            }
+            created = true;
+            let (homepage, icon) = homepage_for(&board, &url);
+            match db::insert_company(pool, &display_name, &homepage, DEFAULT_COLOUR, &icon, board.kind(), &board_url).await? {
+                Some(company) => company,
+                // Another company already uses that homepage; the board URL is unique to this one.
+                None => db::insert_company(pool, &display_name, &board_url, DEFAULT_COLOUR, &icon, board.kind(), &board_url)
+                    .await?
+                    .ok_or("Couldn't save the company. Try again.")?,
             }
         }
     };

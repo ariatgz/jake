@@ -33,6 +33,13 @@ pub enum Board {
         /// Free-text search applied to the listing, usually "Intern".
         keyword: String,
     },
+    SmartRecruiters {
+        /// Company identifier, e.g. `BoschGroup`.
+        company: String,
+        /// Optional search (`?q=` in the board URL) that narrows a large listing.
+        query: String,
+    },
+    Workable { account: String },
 }
 
 impl Board {
@@ -44,6 +51,8 @@ impl Board {
             Board::Lever { .. } => "LEVER",
             Board::Ashby { .. } => "ASHBY",
             Board::Oracle { .. } => "ORACLE",
+            Board::SmartRecruiters { .. } => "SMARTRECRUITERS",
+            Board::Workable { .. } => "WORKABLE",
         }
     }
 
@@ -85,6 +94,14 @@ impl Board {
                 }
                 without_empty_query(url)
             }
+            Board::SmartRecruiters { company, query } => {
+                let mut url = Url::parse(&format!("https://jobs.smartrecruiters.com/{company}")).expect("valid smartrecruiters url");
+                if !query.is_empty() {
+                    url.query_pairs_mut().append_pair("q", query);
+                }
+                without_empty_query(url)
+            }
+            Board::Workable { account } => format!("https://apply.workable.com/{account}"),
         }
     }
 
@@ -98,6 +115,8 @@ impl Board {
                 .map(|d| titleize(&d))
                 .unwrap_or_else(|| "Company".to_string()),
             Board::Greenhouse { token } | Board::Lever { token } | Board::Ashby { token } => titleize(token),
+            Board::SmartRecruiters { company, .. } => titleize(company),
+            Board::Workable { account } => titleize(account),
             // Oracle hosts are shared (hctz.fa.us2...), so the URL says nothing about the company.
             Board::Oracle { .. } => "Company".to_string(),
         }
@@ -147,6 +166,16 @@ fn is_locale_segment(segment: &str) -> bool {
         && bytes[2] == b'-'
         && bytes[..2].iter().all(|b| b.is_ascii_lowercase())
         && bytes[3..].iter().all(|b| b.is_ascii_uppercase())
+}
+
+/// SmartRecruiters paths that aren't a company identifier.
+fn is_smartrecruiters_page(segment: &str) -> bool {
+    matches!(segment, "oneclick-ui" | "external-referrals" | "sr-jobs" | "v1")
+}
+
+/// Workable paths and subdomains that aren't an account name.
+fn is_workable_page(segment: &str) -> bool {
+    matches!(segment, "j" | "api" | "www" | "apply" | "jobs" | "help" | "resources")
 }
 
 /// Recognises a URL that points directly at a supported board. No network access.
@@ -208,6 +237,32 @@ pub fn from_board_url(raw: &str) -> Option<Board> {
         return Some(Board::Ashby { token: token.to_string() });
     }
 
+    if matches!(host.as_str(), "jobs.smartrecruiters.com" | "careers.smartrecruiters.com" | "api.smartrecruiters.com") {
+        let company = match segments.as_slice() {
+            ["v1", "companies", company, ..] => company,
+            [company, ..] if !is_smartrecruiters_page(company) => company,
+            _ => return None,
+        };
+        let query = url.query_pairs().find(|(k, _)| k == "q").map(|(_, v)| v.trim().to_string()).unwrap_or_default();
+        return Some(Board::SmartRecruiters { company: company.to_string(), query });
+    }
+
+    if host == "apply.workable.com" {
+        let account = match segments.as_slice() {
+            ["api", _, "widget", "accounts", account, ..] => account,
+            [account, ..] if !is_workable_page(account) => account,
+            _ => return None,
+        };
+        return Some(Board::Workable { account: account.to_string() });
+    }
+
+    // Older Workable boards live on a subdomain: https://acme.workable.com
+    if let Some(account) = host.strip_suffix(".workable.com") {
+        if !account.contains('.') && !is_workable_page(account) {
+            return Some(Board::Workable { account: account.to_string() });
+        }
+    }
+
     if segments.first() == Some(&"careers-home") {
         let base = format!("{}://{}", url.scheme(), host);
         let query = url
@@ -245,7 +300,7 @@ pub async fn detect(client: &Client, raw: &str) -> Result<Board, Error> {
     if !response.status().is_success() {
         return Err(format!(
             "{raw} answered HTTP {}. Some careers sites block bots; paste the job board link itself instead \
-             (the `myworkdayjobs.com`, `greenhouse.io`, `lever.co`, `ashbyhq.com` or `oraclecloud.com` URL behind the page).",
+             (the `myworkdayjobs.com`, `greenhouse.io`, `lever.co`, `ashbyhq.com`, `smartrecruiters.com`, `workable.com` or `oraclecloud.com` URL behind the page).",
             response.status()
         )
         .into());
@@ -257,8 +312,8 @@ pub async fn detect(client: &Client, raw: &str) -> Result<Board, Error> {
     }
 
     Err(format!(
-        "Couldn't find a supported job board (Workday, Jibe/iCIMS, Greenhouse, Lever, Ashby) at {raw}. \
-         Try passing the board URL itself, e.g. the `myworkdayjobs.com`, `greenhouse.io`, `lever.co` or `ashbyhq.com` link."
+        "Couldn't find a supported job board (Workday, Jibe/iCIMS, Greenhouse, Lever, Ashby, SmartRecruiters, Workable, Oracle HCM) at {raw}. \
+         Try passing the board URL itself, e.g. the `myworkdayjobs.com`, `greenhouse.io`, `lever.co`, `ashbyhq.com`, `smartrecruiters.com` or `workable.com` link."
     )
     .into())
 }
@@ -281,6 +336,27 @@ fn from_html(html: &str, page: &Url) -> Option<Board> {
     let ashby = Regex::new(r"(?:jobs\.ashbyhq\.com|api\.ashbyhq\.com/posting-api/job-board)/([A-Za-z0-9_.-]+)").unwrap();
     if let Some(caps) = ashby.captures(html) {
         return Some(Board::Ashby { token: caps[1].to_string() });
+    }
+
+    let smartrecruiters =
+        Regex::new(r"(?:jobs|careers)\.smartrecruiters\.com/([A-Za-z0-9_-]+)|api\.smartrecruiters\.com/v1/companies/([A-Za-z0-9_-]+)").unwrap();
+    for caps in smartrecruiters.captures_iter(html) {
+        if let Some(company) = caps.get(1).or(caps.get(2)).map(|m| m.as_str()).filter(|c| !is_smartrecruiters_page(c)) {
+            return Some(Board::SmartRecruiters { company: company.to_string(), query: String::new() });
+        }
+    }
+
+    // Separate patterns: one alternation would let the subdomain form swallow `https://apply.workable.com`.
+    let workable = [
+        Regex::new(r"apply\.workable\.com/(?:api/v1/widget/accounts/)?([A-Za-z0-9_-]+)").unwrap(),
+        Regex::new(r"https?://([a-z0-9-]+)\.workable\.com").unwrap(),
+    ];
+    for pattern in &workable {
+        for caps in pattern.captures_iter(html) {
+            if !is_workable_page(&caps[1]) {
+                return Some(Board::Workable { account: caps[1].to_string() });
+            }
+        }
     }
 
     let workday = Regex::new(r"https?://([a-z0-9-]+\.wd\d+\.myworkdayjobs\.com)/(?:[a-z]{2}-[A-Z]{2}/)?([A-Za-z0-9_-]+)").unwrap();
@@ -356,11 +432,36 @@ mod tests {
     }
 
     #[test]
+    fn smartrecruiters_and_workable_urls() {
+        let bosch = Board::SmartRecruiters { company: "BoschGroup".into(), query: String::new() };
+        assert_eq!(from_board_url("https://jobs.smartrecruiters.com/BoschGroup"), Some(bosch.clone()));
+        assert_eq!(from_board_url("https://jobs.smartrecruiters.com/BoschGroup/744000157754859-csr-lead"), Some(bosch.clone()));
+        assert_eq!(from_board_url("https://api.smartrecruiters.com/v1/companies/BoschGroup/postings"), Some(bosch.clone()));
+        assert_eq!(from_board_url("https://jobs.smartrecruiters.com/oneclick-ui/company/BoschGroup/publication/x"), None);
+        let interns = from_board_url("https://careers.smartrecruiters.com/BoschGroup?q=intern").unwrap();
+        assert_eq!(interns, Board::SmartRecruiters { company: "BoschGroup".into(), query: "intern".into() });
+        assert_eq!(interns.canonical_url(), "https://jobs.smartrecruiters.com/BoschGroup?q=intern");
+        assert_eq!(from_board_url(&interns.canonical_url()), Some(interns));
+
+        let hf = Board::Workable { account: "huggingface".into() };
+        assert_eq!(from_board_url("https://apply.workable.com/huggingface/"), Some(hf.clone()));
+        assert_eq!(from_board_url("https://apply.workable.com/huggingface/j/81B46579FE/"), Some(hf.clone()));
+        assert_eq!(from_board_url("https://apply.workable.com/api/v1/widget/accounts/huggingface"), Some(hf.clone()));
+        assert_eq!(from_board_url("https://huggingface.workable.com"), Some(hf.clone()));
+        assert_eq!(from_board_url("https://apply.workable.com/j/81B46579FE"), None);
+        assert_eq!(from_board_url(&hf.canonical_url()), Some(hf));
+    }
+
+    #[test]
     fn html_scan() {
         let page = Url::parse("https://www.etched.com/careers").unwrap();
         let html = r#"<a href="https://jobs.ashbyhq.com/etched/0338e794-38f8">Apply</a>"#;
         assert_eq!(from_html(html, &page), Some(Board::Ashby { token: "etched".into() }));
         let html = r#"<script src="https://app.jibecdn.com/prod/cdn.js"></script>"#;
         assert!(matches!(from_html(html, &page), Some(Board::Jibe { .. })));
+        let html = r#"<a href="https://jobs.smartrecruiters.com/oneclick-ui/x">x</a><a href="https://jobs.smartrecruiters.com/BoschGroup">Jobs</a>"#;
+        assert_eq!(from_html(html, &page), Some(Board::SmartRecruiters { company: "BoschGroup".into(), query: String::new() }));
+        let html = r#"<a href="https://apply.workable.com/j/81B46579FE">x</a><a href="https://apply.workable.com/huggingface/">Jobs</a>"#;
+        assert_eq!(from_html(html, &page), Some(Board::Workable { account: "huggingface".into() }));
     }
 }

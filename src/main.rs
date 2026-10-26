@@ -8,6 +8,7 @@ mod pipeline;
 mod resume;
 mod scheduler;
 mod scrapers;
+mod telegram;
 mod worker;
 
 use poise::serenity_prelude as serenity;
@@ -234,7 +235,7 @@ async fn show_more(ctx: &serenity::Context, data: &serenity::ComponentInteractio
 
     let Some(profile) = db::profile(&shared.pool, owner).await? else { return Ok(()) };
     let mut summary = pipeline::RunSummary::default();
-    pipeline::notify_profile(&ctx.http, &shared.pool, &profile, data.channel_id, &mut summary).await;
+    pipeline::notify_profile(&ctx.http, &shared.pool, &shared.client, &profile, data.channel_id, &mut summary).await;
     for error in &summary.errors {
         eprintln!("Show next: {error}");
     }
@@ -289,6 +290,7 @@ async fn main() -> Result<(), Error> {
             commands::profile::status(),
             commands::resume::resume(),
             commands::outreach::outreach(),
+            commands::telegram::telegram(),
         ],
         on_error: |error| Box::pin(on_error(error)),
         pre_command: |ctx| {
@@ -328,6 +330,7 @@ async fn main() -> Result<(), Error> {
                 let scraper = worker::spawn(ctx.http.clone(), conn_str.clone(), USER_AGENT.to_string(), scrape_lock.clone());
                 scheduler::spawn(scraper.clone(), pool.clone(), Duration::from_secs(interval_minutes * 60));
                 scheduler::spawn_follow_ups(ctx.http.clone(), pool.clone());
+                scheduler::spawn_cleanup(pool.clone());
 
                 Ok(Data { pool, client, scrape_lock, scraper })
             })

@@ -12,7 +12,7 @@ pub struct Company {
     pub url: String,
     pub hex_code: String,
     pub icon_url: String,
-    pub board_type: String, // CUSTOM, WORKDAY, JIBE, GREENHOUSE, LEVER, ASHBY
+    pub board_type: String, // CUSTOM, WORKDAY, JIBE, GREENHOUSE, LEVER, ASHBY, ORACLE, SMARTRECRUITERS, WORKABLE
     pub board_url: Option<String>,
 }
 
@@ -31,6 +31,8 @@ pub struct Profile {
     /// Bumped whenever `evaluated_through` is reset, so a run that started before
     /// the reset doesn't advance it again.
     pub filters_version: i64,
+    /// Also send alerts to this Telegram chat.
+    pub telegram_chat_id: Option<i64>,
 }
 
 /// Changes to apply to a profile's filters; `None` leaves a field unchanged.
@@ -45,7 +47,7 @@ pub struct FilterUpdate<'a> {
 
 macro_rules! profile_columns {
     () => {
-        "user_id, display_name, channel_id, keywords, seniority, locations, exclude_keywords, keywords_title_only, evaluated_through, filters_version"
+        "user_id, display_name, channel_id, keywords, seniority, locations, exclude_keywords, keywords_title_only, evaluated_through, filters_version, telegram_chat_id"
     };
 }
 
@@ -160,6 +162,15 @@ pub async fn advance_evaluated_through(pool: &PgPool, user_id: i64, filters_vers
     Ok(())
 }
 
+pub async fn set_telegram_chat(pool: &PgPool, user_id: i64, chat_id: Option<i64>) -> Result<bool, Error> {
+    let result = sqlx::query("UPDATE profiles SET telegram_chat_id = $2, update_time = NOW() WHERE user_id = $1")
+        .bind(user_id)
+        .bind(chat_id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 // Companies ----------------------------------------------------------------
 
 pub async fn all_companies(pool: &PgPool) -> Result<Vec<Company>, Error> {
@@ -217,14 +228,12 @@ pub async fn insert_company(
     icon_url: &str,
     board_type: &str,
     board_url: &str,
-) -> Result<Company, Error> {
+) -> Result<Option<Company>, Error> {
+    // `None` when another company already has this homepage or board; it is never overwritten.
     Ok(sqlx::query_as(r#"
         INSERT INTO companies (display_name, url, hex_code, icon_url, board_type, board_url)
         VALUES ($1, $2, $3, $4, $5, $6)
-        ON CONFLICT (url) DO UPDATE
-            SET board_type = EXCLUDED.board_type,
-                board_url = EXCLUDED.board_url,
-                state = 'ACTIVE'
+        ON CONFLICT DO NOTHING
         RETURNING id, display_name, url, hex_code, icon_url, board_type, board_url
         "#)
     .bind(display_name)
@@ -233,7 +242,7 @@ pub async fn insert_company(
     .bind(icon_url)
     .bind(board_type)
     .bind(board_url)
-    .fetch_one(pool)
+    .fetch_optional(pool)
     .await?)
 }
 
@@ -271,7 +280,7 @@ pub async fn untrack_company(pool: &PgPool, user_id: i64, company_id: i64) -> Re
 // Applications -------------------------------------------------------------
 
 pub async fn seen_urls(pool: &PgPool, company_id: i64) -> Result<HashSet<String>, Error> {
-    let rows: Vec<(String,)> = sqlx::query_as("SELECT url FROM applications WHERE company_id = $1")
+    let rows: Vec<(String,)> = sqlx::query_as("SELECT url FROM applications WHERE company_id = $1 UNION ALL SELECT url FROM pruned_urls WHERE company_id = $1")
         .bind(company_id)
         .fetch_all(pool)
         .await?;
@@ -346,6 +355,57 @@ pub async fn insert_application(pool: &PgPool, event: &ScrapeEvent) -> Result<Op
     .await?;
 
     Ok(row.map(|(id,)| id))
+}
+
+/// Most jobs `prune_old_jobs` deletes per call.
+pub const PRUNE_BATCH: u64 = 5000;
+
+/// Deletes jobs stored more than `months` ago that nobody applied to (no Apply
+/// click or SUBMITTED/REJECTED status). Their URLs are kept in `pruned_urls` so
+/// a posting that is still listed isn't sent again. Returns how many were deleted.
+pub async fn prune_old_jobs(pool: &PgPool, months: i32) -> Result<u64, Error> {
+    let result = sqlx::query(
+        r#"
+        WITH doomed AS (
+            SELECT a.id, a.company_id, a.url
+            FROM applications AS a
+            WHERE a.create_time < NOW() - make_interval(months => $1)
+              AND NOT EXISTS (
+                SELECT 1 FROM notifications AS n
+                WHERE n.application_id = a.id
+                  AND (
+                    n.state IN ('SUBMITTED', 'REJECTED')
+                    -- ACTIVE is also the state of an alert nobody clicked; a user event means Apply was pressed.
+                    OR (n.state = 'ACTIVE' AND EXISTS (
+                        SELECT 1 FROM application_events AS e
+                        WHERE e.application_id = a.id AND e.user_id = n.user_id
+                    ))
+                  )
+              )
+            LIMIT $2
+        ),
+        remembered AS (
+            INSERT INTO pruned_urls (url, company_id)
+            SELECT url, company_id FROM doomed
+            ON CONFLICT (url) DO NOTHING
+        ),
+        removed_cities AS (
+            DELETE FROM application_cities WHERE application_id IN (SELECT id FROM doomed)
+        ),
+        removed_terms AS (
+            DELETE FROM application_terms WHERE application_id IN (SELECT id FROM doomed)
+        ),
+        removed_events AS (
+            DELETE FROM application_events WHERE application_id IN (SELECT id FROM doomed)
+        )
+        DELETE FROM applications WHERE id IN (SELECT id FROM doomed)
+        "#,
+    )
+    .bind(months)
+    .bind(PRUNE_BATCH as i64)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
 }
 
 /// Removes repeated items while keeping the first occurrence's position.
