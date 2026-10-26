@@ -64,8 +64,9 @@ const SEEDS: &[(&str, &str, &str)] = &[
     ("Altera", "WORKDAY", "https://altera.wd1.myworkdayjobs.com/Altera?jobFamilyGroup=3a3ac0bdef3a100fb57f7caeff190000"),
     ("Intel", "WORKDAY", "https://intel.wd1.myworkdayjobs.com/External?jobFamilyGroup=dc8bf79476611087d67b36517cf17036"),
     ("NVIDIA", "WORKDAY", "https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite?jobFamilyGroup=0c40f6bd1d8f10ae43ffda1e8d447e94"),
-    ("onsemi", "WORKDAY", "https://onsemi.wd1.myworkdayjobs.com/onsemi"),
-    ("Astera Labs", "GREENHOUSE", "https://job-boards.greenhouse.io/asteralabs"),
+    // onsemi moved to Oracle Cloud HCM and Astera Labs keeps interns on a separate board (migration 20261025000000).
+    ("onsemi", "ORACLE", "https://hctz.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001/requisitions?keyword=Intern"),
+    ("Astera Labs", "GREENHOUSE", "https://job-boards.greenhouse.io/asteraearlycareer2027"),
     ("Etched", "ASHBY", "https://jobs.ashbyhq.com/etched"),
     // Added in migration 20261022030000_more_hardware_companies.
     ("Marvell", "WORKDAY", "https://marvell.wd1.myworkdayjobs.com/MarvellCareers?workerSubType=65dea26481d001e09dfbab4927173419"),
@@ -97,6 +98,8 @@ fn seed_urls_are_canonical() {
 fn client() -> reqwest::Client {
     reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36")
+        // Cloudflare-fronted sites answer 403 without this; the bot sends it too.
+        .default_headers(reqwest::header::HeaderMap::from_iter([(reqwest::header::ACCEPT_LANGUAGE, reqwest::header::HeaderValue::from_static("en-US,en;q=0.9"))]))
         .timeout(std::time::Duration::from_secs(40))
         .build()
         .unwrap()
@@ -158,7 +161,5 @@ async fn live_boards() {
         }
     }
 
-    // onsemi's Workday site was returning HTTP 500/422 when this was written; don't fail the run on it alone.
-    failures.retain(|f| !f.starts_with("onsemi"));
     assert!(failures.is_empty(), "board failures: {failures:#?}");
 }

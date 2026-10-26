@@ -79,3 +79,49 @@ async fn legacy(company: &Company, seen: HashSet<String>, client: Client) -> Res
         Err(join_error) => Err(format!("scraper crashed: {join_error}").into()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn company(name: &str, board_type: &str, board_url: &str) -> Company {
+        Company {
+            id: 0,
+            display_name: name.into(),
+            url: String::new(),
+            hex_code: "#000000".into(),
+            icon_url: String::new(),
+            board_type: board_type.into(),
+            board_url: Some(board_url.into()),
+        }
+    }
+
+    /// Hits the real boards the seed migrations point at. Run with
+    /// `cargo test live_seeded_boards -- --ignored --nocapture`.
+    #[tokio::test]
+    #[ignore = "network"]
+    async fn live_seeded_boards() {
+        // Same headers as `http_client` in main.rs (not reachable from the tests/ harness).
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(reqwest::header::ACCEPT_LANGUAGE, reqwest::header::HeaderValue::from_static("en-US,en;q=0.9"));
+        let client = Client::builder()
+            .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36")
+            .default_headers(headers)
+            .build()
+            .unwrap();
+        let boards = [
+            company("Marvell", "WORKDAY", "https://marvell.wd1.myworkdayjobs.com/MarvellCareers?workerSubType=65dea26481d001e09dfbab4927173419"),
+            company("Astera Labs", "GREENHOUSE", "https://job-boards.greenhouse.io/asteraearlycareer2027"),
+            company("onsemi", "ORACLE", "https://hctz.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001/requisitions?keyword=Intern"),
+        ];
+        for c in boards {
+            let events = scrape_company(&c, HashSet::new(), client.clone()).await.unwrap_or_else(|e| panic!("{}: {e}", c.display_name));
+            assert!(!events.is_empty(), "{} returned no jobs", c.display_name);
+            let with_location = events.iter().filter(|e| !e.cities.is_empty()).count();
+            let with_text = events.iter().filter(|e| e.application.page_content.len() > 200).count();
+            println!("{}: {} jobs, {with_location} with a location, {with_text} with a description", c.display_name, events.len());
+            println!("  e.g. {} | {:?} | {}", events[0].application.job_title, events[0].cities.first().map(|c| &c.display_name), events[0].application.url);
+            assert!(with_text * 10 >= events.len() * 8, "{}: most postings should have text", c.display_name);
+        }
+    }
+}
